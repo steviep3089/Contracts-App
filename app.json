@@ -1,7 +1,7 @@
 {
   "expo": {
     "name": "Contracts App",
-    "slug": "maintenance-contracts-app",
+    "slug": "contracts-app",
     "version": "1.0.0",
     "orientation": "portrait",
     "icon": "./assets/icon.png",
@@ -28,7 +28,7 @@
     "web": {
       "favicon": "./assets/favicon.png"
     },
-    "scheme": "contractsportal",
+    "scheme": "contractsapp",
     "extra": {
       "eas": {
         "projectId": "18147424-66e5-474a-8390-ffdfa94162af"

@@ -16,7 +16,7 @@ import OutboxScreen from "./screens/OutboxScreen";
 const Stack = createNativeStackNavigator();
 
 const linking = {
-  prefixes: ["contractsportal://"],
+  prefixes: ["contractsapp://"],
   config: {
     screens: {
       Login: "login",

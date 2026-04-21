@@ -12,7 +12,7 @@ export default function SignUpScreen({ navigation }) {
       email,
       password,
       options: {
-        emailRedirectTo: "contractsportal://login",
+        emailRedirectTo: "contractsapp://login",
       },
     });
 

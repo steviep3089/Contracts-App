@@ -115,7 +115,7 @@ export default function LoginScreen({ navigation }) {
     }
 
     const { error } = await supabase.auth.resetPasswordForEmail(email, {
-      redirectTo: "contractsportal://",
+      redirectTo: "contractsapp://",
     });
 
     if (error) {

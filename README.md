@@ -14,8 +14,8 @@ npm run start
 Edit `supabase.js` and set the anon key.
 
 In Supabase Auth URL configuration, add:
-- `contractsportal://`
-- `contractsportal://login`
+- `contractsapp://`
+- `contractsapp://login`
 
 ## 3) Build for iOS and Android (APK/AAB)
 
