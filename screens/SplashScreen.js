@@ -13,7 +13,7 @@ export default function SplashScreen({ navigation }) {
   return (
     <View style={styles.container}>
       <ActivityIndicator size="large" color="#007aff" />
-      <Text style={styles.brand}>Sitebatch Contracts</Text>
+      <Text style={styles.brand}>Contracts Portal</Text>
     </View>
   );
 }
