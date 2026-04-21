@@ -1,7 +1,7 @@
 {
   "expo": {
     "name": "Contracts App",
-    "slug": "contracts-app",
+    "slug": "contracts-portal",
     "version": "1.0.0",
     "orientation": "portrait",
     "icon": "./assets/icon.png",
@@ -16,7 +16,10 @@
     ],
     "ios": {
       "supportsTablet": true,
-      "bundleIdentifier": "com.sitebatch.contracts"
+      "bundleIdentifier": "com.sitebatch.contracts",
+      "infoPlist": {
+        "ITSAppUsesNonExemptEncryption": false
+      }
     },
     "android": {
       "adaptiveIcon": {
