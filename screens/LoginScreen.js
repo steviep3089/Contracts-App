@@ -146,11 +146,11 @@ export default function LoginScreen({ navigation }) {
       <ScrollView contentContainerStyle={styles.container}>
         <Animated.View style={{ opacity: logoOpacity, alignItems: "center" }}>
           <View style={styles.logoCircle}>
-            <Text style={styles.logoText}>SC</Text>
+            <Text style={styles.logoText}>CP</Text>
           </View>
         </Animated.View>
 
-        <Text style={styles.title}>Contracts Login</Text>
+        <Text style={styles.title}>Contracts Portal</Text>
 
         <TextInput
           placeholder="Email"
