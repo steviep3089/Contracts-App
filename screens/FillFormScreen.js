@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import { View, Text, TextInput, StyleSheet, TouchableOpacity, Alert, ScrollView, Modal, Image } from "react-native";
 import { useIsFocused } from "@react-navigation/native";
 import NetInfo from "@react-native-community/netinfo";
@@ -122,8 +122,10 @@ function isTransportError(error) {
 
 export default function FillFormScreen({ route, navigation }) {
   const form = route?.params?.form;
+  const launch = form?.launch || null;
   const isFocused = useIsFocused();
   const defaultContractLocation = form?.contractName || form?.contractNo || "ROLLER";
+  const lastLaunchTokenRef = useRef(null);
   const [version, setVersion] = useState("1");
   const [completedBy, setCompletedBy] = useState("");
   const [jobTitle, setJobTitle] = useState("");
@@ -186,7 +188,33 @@ export default function FillFormScreen({ route, navigation }) {
     setLocation(defaultContractLocation);
     initializeUserDefaults();
     fetchAssetDirectory();
-  }, [isFocused, form?.id, defaultContractLocation]);
+
+    if (launch?.token && launch.token !== lastLaunchTokenRef.current) {
+      lastLaunchTokenRef.current = launch.token;
+
+      if (launch.mode === "copy" && launch.data) {
+        const source = launch.data;
+        setVersion(String(source.sheet_version || "1"));
+        setMachineReg(String(source.machine_reg || ""));
+        setAssetTag(String(source.asset_no || ""));
+        setSerialNo(String(source.serial_no || ""));
+        setMachineHours(source.machine_hours != null ? String(source.machine_hours) : "");
+        setMachineType(String(source.machine_type || "Roller"));
+        setChecklist({ ...buildInitialChecklist(), ...(source.checklist || {}) });
+        setNotes(String(source.notes || ""));
+        Alert.alert("Copied", "Copied from latest completed checklist for this contract. Date set to today.");
+      } else {
+        setVersion("1");
+        setMachineReg("");
+        setAssetTag("");
+        setSerialNo("");
+        setMachineHours("");
+        setMachineType("Roller");
+        setChecklist(buildInitialChecklist());
+        setNotes("");
+      }
+    }
+  }, [isFocused, form?.id, defaultContractLocation, launch]);
 
   async function initializeUserDefaults() {
     const {
