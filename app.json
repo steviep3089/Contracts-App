@@ -16,7 +16,6 @@
     ],
     "ios": {
       "supportsTablet": true,
-      "buildNumber": "2",
       "bundleIdentifier": "com.sitebatch.contracts",
       "infoPlist": {
         "ITSAppUsesNonExemptEncryption": false
