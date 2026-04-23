@@ -1,5 +1,5 @@
-import React, { useCallback, useEffect, useState } from "react";
-import { View, Text, StyleSheet, TouchableOpacity } from "react-native";
+import React, { useCallback, useEffect, useMemo, useState } from "react";
+import { View, Text, StyleSheet, TouchableOpacity, Modal, TextInput, ScrollView, Alert } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
 import NetInfo from "@react-native-community/netinfo";
 import { useIsFocused } from "@react-navigation/native";
@@ -10,7 +10,19 @@ import { syncChecklistSubmission } from "../services/checklistSync";
 export default function HomeScreen({ navigation }) {
   const [outboxCount, setOutboxCount] = useState(0);
   const [isSyncing, setIsSyncing] = useState(false);
+  const [nearMissVisible, setNearMissVisible] = useState(false);
+  const [sitePickerOpen, setSitePickerOpen] = useState(false);
+  const [sites, setSites] = useState([]);
+  const [loadingSites, setLoadingSites] = useState(false);
+  const [submittingNearMiss, setSubmittingNearMiss] = useState(false);
+  const [reportDateTime, setReportDateTime] = useState(new Date());
+  const [reporterName, setReporterName] = useState("");
+  const [selectedSite, setSelectedSite] = useState("");
+  const [nearMissDetails, setNearMissDetails] = useState("");
+  const [actionsTaken, setActionsTaken] = useState("");
   const isFocused = useIsFocused();
+
+  const reportDateTimeLabel = useMemo(() => reportDateTime.toLocaleString(), [reportDateTime]);
 
   const refreshOutboxCount = useCallback(async () => {
     const count = await getOutboxCount();
@@ -77,6 +89,139 @@ export default function HomeScreen({ navigation }) {
     });
   }
 
+  async function fetchLiveSites() {
+    setLoadingSites(true);
+    try {
+      const {
+        data: { user },
+      } = await supabase.auth.getUser();
+
+      const [contractsRes, roleRes, teamRes] = await Promise.all([
+        supabase
+          .from("contracts")
+          .select("id, name, contract_name, contract_number, status")
+          .order("created_at", { ascending: false }),
+        user?.id
+          ? supabase.from("app_user_roles").select("role").eq("user_id", user.id).maybeSingle()
+          : Promise.resolve({ data: null, error: null }),
+        user?.id
+          ? supabase.from("contract_team_roles").select("contract_id").eq("user_id", user.id)
+          : Promise.resolve({ data: [], error: null }),
+      ]);
+
+      if (contractsRes.error || roleRes.error || teamRes.error) {
+        throw new Error(
+          contractsRes.error?.message || roleRes.error?.message || teamRes.error?.message || "Could not load sites"
+        );
+      }
+
+      const role = String(roleRes.data?.role || "viewer").toLowerCase();
+      const isPrivileged = role === "admin" || role === "manager";
+      const assignedIds = new Set((teamRes.data || []).map((row) => row.contract_id));
+
+      const filtered = (contractsRes.data || []).filter((row) => {
+        if (!isPrivileged && !assignedIds.has(row.id)) return false;
+        const status = String(row.status || "").toLowerCase();
+        return status === "active" || status === "live" || status === "open";
+      });
+
+      const fallback = (contractsRes.data || []).filter((row) => {
+        if (isPrivileged) return true;
+        return assignedIds.has(row.id);
+      });
+
+      const source = filtered.length ? filtered : fallback;
+      const mapped = source.map((row) => ({
+        id: row.id,
+        label: row.name || row.contract_name || row.contract_number || "Unnamed Site",
+      }));
+
+      const deduped = [];
+      const seen = new Set();
+      for (const site of mapped) {
+        const key = site.label.trim().toLowerCase();
+        if (!key || seen.has(key)) continue;
+        seen.add(key);
+        deduped.push(site);
+      }
+      setSites(deduped);
+    } catch (error) {
+      Alert.alert("Could not load sites", String(error?.message || "Please try again."));
+      setSites([]);
+    } finally {
+      setLoadingSites(false);
+    }
+  }
+
+  async function openNearMissModal() {
+    const {
+      data: { user },
+    } = await supabase.auth.getUser();
+
+    const metadata = user?.user_metadata || {};
+    const defaultName =
+      metadata.full_name ||
+      metadata.name ||
+      [metadata.first_name, metadata.last_name].filter(Boolean).join(" ") ||
+      user?.email ||
+      "";
+
+    setReportDateTime(new Date());
+    setReporterName(String(defaultName));
+    setSelectedSite("");
+    setNearMissDetails("");
+    setActionsTaken("");
+    setNearMissVisible(true);
+    setSitePickerOpen(false);
+    fetchLiveSites();
+  }
+
+  async function submitNearMiss() {
+    if (!reporterName.trim()) {
+      Alert.alert("Name required", "Please enter the name of the person reporting.");
+      return;
+    }
+    if (!selectedSite.trim()) {
+      Alert.alert("Site required", "Please select a site.");
+      return;
+    }
+    if (!nearMissDetails.trim()) {
+      Alert.alert("Details required", "Please add near miss details.");
+      return;
+    }
+    if (!actionsTaken.trim()) {
+      Alert.alert("Action required", "Please describe what has been done about it.");
+      return;
+    }
+
+    setSubmittingNearMiss(true);
+    try {
+      const payload = {
+        reportedAt: reportDateTime.toISOString(),
+        reporterName: reporterName.trim(),
+        site: selectedSite.trim(),
+        nearMissDetails: nearMissDetails.trim(),
+        actionsTaken: actionsTaken.trim(),
+        source: "contracts-app",
+      };
+
+      const { data, error } = await supabase.functions.invoke("report-near-miss", {
+        body: payload,
+      });
+
+      if (error || data?.success === false) {
+        throw new Error(error?.message || data?.error || "Could not submit near miss report.");
+      }
+
+      setNearMissVisible(false);
+      Alert.alert("Submitted", "Near miss report sent successfully.");
+    } catch (error) {
+      Alert.alert("Submission failed", String(error?.message || "Please try again."));
+    } finally {
+      setSubmittingNearMiss(false);
+    }
+  }
+
   return (
     <View style={styles.container}>
       <TouchableOpacity style={styles.outboxButton} onPress={() => navigation.navigate("Outbox")}>
@@ -98,9 +243,99 @@ export default function HomeScreen({ navigation }) {
         <Text style={styles.buttonPrimaryText}>Contracts</Text>
       </TouchableOpacity>
 
+      <TouchableOpacity style={styles.buttonSecondary} onPress={openNearMissModal}>
+        <Text style={styles.buttonSecondaryText}>Report A Near Miss</Text>
+      </TouchableOpacity>
+
       <TouchableOpacity style={styles.signOutButton} onPress={handleSignOut}>
         <Text style={styles.signOutText}>Sign Out</Text>
       </TouchableOpacity>
+
+      <Modal visible={nearMissVisible} transparent animationType="slide" onRequestClose={() => setNearMissVisible(false)}>
+        <View style={styles.modalBackdrop}>
+          <View style={styles.modalCard}>
+            <Text style={styles.modalTitle}>Report A Near Miss</Text>
+
+            <ScrollView style={styles.modalScroll} contentContainerStyle={styles.modalScrollContent}>
+              <Text style={styles.fieldLabel}>Time / Date</Text>
+              <TextInput style={[styles.input, styles.readOnlyInput]} value={reportDateTimeLabel} editable={false} />
+
+              <Text style={styles.fieldLabel}>Name of person reporting</Text>
+              <TextInput
+                style={styles.input}
+                value={reporterName}
+                onChangeText={setReporterName}
+                placeholder="Enter name"
+                autoCapitalize="words"
+              />
+
+              <Text style={styles.fieldLabel}>Site</Text>
+              <TouchableOpacity style={styles.selectButton} onPress={() => setSitePickerOpen((prev) => !prev)}>
+                <Text style={selectedSite ? styles.selectButtonText : styles.selectPlaceholder}>
+                  {selectedSite || (loadingSites ? "Loading live sites..." : "Select site")}
+                </Text>
+                <Ionicons name={sitePickerOpen ? "chevron-up" : "chevron-down"} size={16} color="#334155" />
+              </TouchableOpacity>
+
+              {sitePickerOpen ? (
+                <View style={styles.siteListWrap}>
+                  <ScrollView nestedScrollEnabled style={styles.siteList}>
+                    {sites.map((site) => (
+                      <TouchableOpacity
+                        key={site.id}
+                        style={styles.siteRow}
+                        onPress={() => {
+                          setSelectedSite(site.label);
+                          setSitePickerOpen(false);
+                        }}
+                      >
+                        <Text style={styles.siteRowText}>{site.label}</Text>
+                      </TouchableOpacity>
+                    ))}
+                    {!loadingSites && !sites.length ? (
+                      <Text style={styles.emptySiteText}>No live sites found.</Text>
+                    ) : null}
+                  </ScrollView>
+                </View>
+              ) : null}
+
+              <Text style={styles.fieldLabel}>{"Near Miss Details (Don't Use People's Names)"}</Text>
+              <TextInput
+                style={[styles.input, styles.multilineInput]}
+                value={nearMissDetails}
+                onChangeText={setNearMissDetails}
+                placeholder="Describe what the near miss was"
+                multiline
+                textAlignVertical="top"
+              />
+
+              <Text style={styles.fieldLabel}>What has been done about it</Text>
+              <TextInput
+                style={[styles.input, styles.multilineInput]}
+                value={actionsTaken}
+                onChangeText={setActionsTaken}
+                placeholder="Describe actions taken"
+                multiline
+                textAlignVertical="top"
+              />
+            </ScrollView>
+
+            <View style={styles.modalActions}>
+              <TouchableOpacity
+                style={styles.cancelButton}
+                onPress={() => setNearMissVisible(false)}
+                disabled={submittingNearMiss}
+              >
+                <Text style={styles.cancelButtonText}>Cancel</Text>
+              </TouchableOpacity>
+
+              <TouchableOpacity style={styles.submitButton} onPress={submitNearMiss} disabled={submittingNearMiss}>
+                <Text style={styles.submitButtonText}>{submittingNearMiss ? "Submitting..." : "Submit"}</Text>
+              </TouchableOpacity>
+            </View>
+          </View>
+        </View>
+      </Modal>
     </View>
   );
 }
@@ -169,6 +404,20 @@ const styles = StyleSheet.create({
     fontWeight: "600",
     textAlign: "center",
   },
+  buttonSecondary: {
+    backgroundColor: "#0f766e",
+    paddingVertical: 14,
+    paddingHorizontal: 30,
+    borderRadius: 10,
+    marginBottom: 12,
+    width: "90%",
+  },
+  buttonSecondaryText: {
+    color: "#fff",
+    fontSize: 18,
+    fontWeight: "600",
+    textAlign: "center",
+  },
   signOutButton: {
     marginTop: 20,
   },
@@ -176,5 +425,134 @@ const styles = StyleSheet.create({
     color: "red",
     fontSize: 18,
     fontWeight: "600",
+  },
+  modalBackdrop: {
+    flex: 1,
+    backgroundColor: "rgba(2, 6, 23, 0.45)",
+    justifyContent: "center",
+    padding: 16,
+  },
+  modalCard: {
+    backgroundColor: "#ffffff",
+    borderRadius: 14,
+    maxHeight: "90%",
+    overflow: "hidden",
+  },
+  modalTitle: {
+    fontSize: 20,
+    fontWeight: "700",
+    color: "#0f172a",
+    paddingHorizontal: 16,
+    paddingTop: 16,
+    paddingBottom: 10,
+  },
+  modalScroll: {
+    maxHeight: 500,
+  },
+  modalScrollContent: {
+    paddingHorizontal: 16,
+    paddingBottom: 12,
+  },
+  fieldLabel: {
+    fontSize: 14,
+    fontWeight: "600",
+    color: "#0f172a",
+    marginTop: 8,
+    marginBottom: 6,
+  },
+  input: {
+    borderWidth: 1,
+    borderColor: "#cbd5e1",
+    borderRadius: 8,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    fontSize: 15,
+    color: "#0f172a",
+    backgroundColor: "#fff",
+  },
+  readOnlyInput: {
+    backgroundColor: "#f8fafc",
+    color: "#475569",
+  },
+  selectButton: {
+    borderWidth: 1,
+    borderColor: "#cbd5e1",
+    borderRadius: 8,
+    paddingHorizontal: 12,
+    paddingVertical: 11,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    backgroundColor: "#fff",
+  },
+  selectButtonText: {
+    fontSize: 15,
+    color: "#0f172a",
+  },
+  selectPlaceholder: {
+    fontSize: 15,
+    color: "#64748b",
+  },
+  siteListWrap: {
+    borderWidth: 1,
+    borderColor: "#cbd5e1",
+    borderRadius: 8,
+    marginTop: 8,
+    overflow: "hidden",
+  },
+  siteList: {
+    maxHeight: 170,
+    backgroundColor: "#fff",
+  },
+  siteRow: {
+    paddingVertical: 10,
+    paddingHorizontal: 12,
+    borderBottomWidth: 1,
+    borderBottomColor: "#e2e8f0",
+  },
+  siteRowText: {
+    fontSize: 15,
+    color: "#0f172a",
+  },
+  emptySiteText: {
+    padding: 12,
+    color: "#64748b",
+    fontSize: 14,
+  },
+  multilineInput: {
+    minHeight: 100,
+  },
+  modalActions: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    paddingHorizontal: 16,
+    paddingBottom: 16,
+    paddingTop: 6,
+    gap: 10,
+  },
+  cancelButton: {
+    flex: 1,
+    borderWidth: 1,
+    borderColor: "#cbd5e1",
+    borderRadius: 8,
+    paddingVertical: 12,
+    alignItems: "center",
+  },
+  cancelButtonText: {
+    color: "#334155",
+    fontSize: 15,
+    fontWeight: "600",
+  },
+  submitButton: {
+    flex: 1,
+    backgroundColor: "#0f766e",
+    borderRadius: 8,
+    paddingVertical: 12,
+    alignItems: "center",
+  },
+  submitButtonText: {
+    color: "#ffffff",
+    fontSize: 15,
+    fontWeight: "700",
   },
 });
