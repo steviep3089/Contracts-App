@@ -159,13 +159,35 @@ export default function HomeScreen({ navigation }) {
   async function openNearMissModal() {
     const {
       data: { user },
+      error: userError,
     } = await supabase.auth.getUser();
+
+    if (userError) {
+      Alert.alert("Session issue", userError.message || "Could not load signed-in user details.");
+    }
+
+    const [{ data: profile }, { data: personByUser }, { data: personByEmail }] = await Promise.all([
+      user?.id
+        ? supabase.from("user_profiles").select("full_name").eq("user_id", user.id).maybeSingle()
+        : Promise.resolve({ data: null }),
+      user?.id
+        ? supabase.from("people_directory").select("full_name").eq("portal_user_id", user.id).maybeSingle()
+        : Promise.resolve({ data: null }),
+      user?.email
+        ? supabase.from("people_directory").select("full_name").eq("email", user.email).maybeSingle()
+        : Promise.resolve({ data: null }),
+    ]);
 
     const metadata = user?.user_metadata || {};
     const defaultName =
+      String(profile?.full_name || "").trim() ||
+      String(personByUser?.full_name || "").trim() ||
+      String(personByEmail?.full_name || "").trim() ||
+      String(metadata.display_name || "").trim() ||
       metadata.full_name ||
       metadata.name ||
-      [metadata.first_name, metadata.last_name].filter(Boolean).join(" ");
+      [metadata.first_name, metadata.last_name].filter(Boolean).join(" ") ||
+      String(user?.email || "").trim();
 
     setReportDateTime(new Date());
     setReporterName(String(defaultName));
@@ -299,6 +321,9 @@ export default function HomeScreen({ navigation }) {
 
               {showDatePicker ? (
                 <View style={styles.pickerWrap}>
+                  <TouchableOpacity style={styles.pickerCloseButton} onPress={() => setShowDatePicker(false)}>
+                    <Ionicons name="close" size={16} color="#334155" />
+                  </TouchableOpacity>
                   <DateTimePicker
                     value={reportDateTime}
                     mode="date"
@@ -310,6 +335,9 @@ export default function HomeScreen({ navigation }) {
 
               {showTimePicker ? (
                 <View style={styles.pickerWrap}>
+                  <TouchableOpacity style={styles.pickerCloseButton} onPress={() => setShowTimePicker(false)}>
+                    <Ionicons name="close" size={16} color="#334155" />
+                  </TouchableOpacity>
                   <DateTimePicker
                     value={reportDateTime}
                     mode="time"
@@ -557,7 +585,20 @@ const styles = StyleSheet.create({
     borderColor: "#e2e8f0",
     borderRadius: 8,
     paddingHorizontal: 4,
+    paddingTop: 20,
     backgroundColor: "#fff",
+    position: "relative",
+  },
+  pickerCloseButton: {
+    position: "absolute",
+    top: 2,
+    right: 2,
+    width: 24,
+    height: 24,
+    borderRadius: 12,
+    alignItems: "center",
+    justifyContent: "center",
+    zIndex: 2,
   },
   selectButton: {
     borderWidth: 1,
