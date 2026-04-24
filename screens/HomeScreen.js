@@ -1,5 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useState } from "react";
-import { View, Text, StyleSheet, TouchableOpacity, Modal, TextInput, ScrollView, Alert } from "react-native";
+import { View, Text, StyleSheet, TouchableOpacity, Modal, TextInput, ScrollView, Alert, Platform } from "react-native";
+import DateTimePicker from "@react-native-community/datetimepicker";
 import { Ionicons } from "@expo/vector-icons";
 import NetInfo from "@react-native-community/netinfo";
 import { useIsFocused } from "@react-navigation/native";
@@ -16,6 +17,8 @@ export default function HomeScreen({ navigation }) {
   const [loadingSites, setLoadingSites] = useState(false);
   const [submittingNearMiss, setSubmittingNearMiss] = useState(false);
   const [reportDateTime, setReportDateTime] = useState(new Date());
+  const [showDatePicker, setShowDatePicker] = useState(false);
+  const [showTimePicker, setShowTimePicker] = useState(false);
   const [reporterName, setReporterName] = useState("");
   const [selectedSite, setSelectedSite] = useState("");
   const [nearMissDetails, setNearMissDetails] = useState("");
@@ -162,9 +165,7 @@ export default function HomeScreen({ navigation }) {
     const defaultName =
       metadata.full_name ||
       metadata.name ||
-      [metadata.first_name, metadata.last_name].filter(Boolean).join(" ") ||
-      user?.email ||
-      "";
+      [metadata.first_name, metadata.last_name].filter(Boolean).join(" ");
 
     setReportDateTime(new Date());
     setReporterName(String(defaultName));
@@ -173,7 +174,35 @@ export default function HomeScreen({ navigation }) {
     setActionsTaken("");
     setNearMissVisible(true);
     setSitePickerOpen(false);
+    setShowDatePicker(false);
+    setShowTimePicker(false);
     fetchLiveSites();
+  }
+
+  function onDatePicked(_event, selectedDate) {
+    if (Platform.OS === "android") {
+      setShowDatePicker(false);
+    }
+    if (!selectedDate) return;
+
+    setReportDateTime((prev) => {
+      const next = new Date(prev);
+      next.setFullYear(selectedDate.getFullYear(), selectedDate.getMonth(), selectedDate.getDate());
+      return next;
+    });
+  }
+
+  function onTimePicked(_event, selectedTime) {
+    if (Platform.OS === "android") {
+      setShowTimePicker(false);
+    }
+    if (!selectedTime) return;
+
+    setReportDateTime((prev) => {
+      const next = new Date(prev);
+      next.setHours(selectedTime.getHours(), selectedTime.getMinutes(), 0, 0);
+      return next;
+    });
   }
 
   async function submitNearMiss() {
@@ -259,6 +288,36 @@ export default function HomeScreen({ navigation }) {
             <ScrollView style={styles.modalScroll} contentContainerStyle={styles.modalScrollContent}>
               <Text style={styles.fieldLabel}>Time / Date</Text>
               <TextInput style={[styles.input, styles.readOnlyInput]} value={reportDateTimeLabel} editable={false} />
+              <View style={styles.dateTimeRow}>
+                <TouchableOpacity style={styles.dateTimeButton} onPress={() => setShowDatePicker(true)}>
+                  <Text style={styles.dateTimeButtonText}>Change Date</Text>
+                </TouchableOpacity>
+                <TouchableOpacity style={styles.dateTimeButton} onPress={() => setShowTimePicker(true)}>
+                  <Text style={styles.dateTimeButtonText}>Change Time</Text>
+                </TouchableOpacity>
+              </View>
+
+              {showDatePicker ? (
+                <View style={styles.pickerWrap}>
+                  <DateTimePicker
+                    value={reportDateTime}
+                    mode="date"
+                    display={Platform.OS === "ios" ? "spinner" : "default"}
+                    onChange={onDatePicked}
+                  />
+                </View>
+              ) : null}
+
+              {showTimePicker ? (
+                <View style={styles.pickerWrap}>
+                  <DateTimePicker
+                    value={reportDateTime}
+                    mode="time"
+                    display={Platform.OS === "ios" ? "spinner" : "default"}
+                    onChange={onTimePicked}
+                  />
+                </View>
+              ) : null}
 
               <Text style={styles.fieldLabel}>Name of person reporting</Text>
               <TextInput
@@ -473,6 +532,32 @@ const styles = StyleSheet.create({
   readOnlyInput: {
     backgroundColor: "#f8fafc",
     color: "#475569",
+  },
+  dateTimeRow: {
+    flexDirection: "row",
+    gap: 10,
+    marginTop: 8,
+  },
+  dateTimeButton: {
+    flex: 1,
+    borderWidth: 1,
+    borderColor: "#0f766e",
+    borderRadius: 8,
+    paddingVertical: 10,
+    alignItems: "center",
+  },
+  dateTimeButtonText: {
+    color: "#0f766e",
+    fontWeight: "600",
+    fontSize: 14,
+  },
+  pickerWrap: {
+    marginTop: 8,
+    borderWidth: 1,
+    borderColor: "#e2e8f0",
+    borderRadius: 8,
+    paddingHorizontal: 4,
+    backgroundColor: "#fff",
   },
   selectButton: {
     borderWidth: 1,
