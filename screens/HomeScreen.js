@@ -158,9 +158,17 @@ export default function HomeScreen({ navigation }) {
 
   async function openNearMissModal() {
     const {
-      data: { user },
+      data: { user: fetchedUser },
       error: userError,
     } = await supabase.auth.getUser();
+
+    let user = fetchedUser;
+    if (!user) {
+      const {
+        data: { session },
+      } = await supabase.auth.getSession();
+      user = session?.user || null;
+    }
 
     if (userError) {
       Alert.alert("Session issue", userError.message || "Could not load signed-in user details.");
@@ -179,6 +187,7 @@ export default function HomeScreen({ navigation }) {
     ]);
 
     const metadata = user?.user_metadata || {};
+    const emailPrefix = String(user?.email || "").split("@")[0] || "";
     const defaultName =
       String(profile?.full_name || "").trim() ||
       String(personByUser?.full_name || "").trim() ||
@@ -187,10 +196,13 @@ export default function HomeScreen({ navigation }) {
       metadata.full_name ||
       metadata.name ||
       [metadata.first_name, metadata.last_name].filter(Boolean).join(" ") ||
+      emailPrefix ||
       String(user?.email || "").trim();
 
+    const resolvedName = String(defaultName || "").trim() || String(reporterName || "").trim();
+
     setReportDateTime(new Date());
-    setReporterName(String(defaultName));
+    setReporterName(resolvedName);
     setSelectedSite("");
     setNearMissDetails("");
     setActionsTaken("");
