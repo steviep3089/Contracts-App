@@ -12,6 +12,7 @@ import HomeScreen from "./screens/HomeScreen";
 import ContractFormsScreen from "./screens/ContractFormsScreen";
 import FillFormScreen from "./screens/FillFormScreen";
 import OutboxScreen from "./screens/OutboxScreen";
+import SelfCertApprovalsScreen from "./screens/SelfCertApprovalsScreen";
 
 const Stack = createNativeStackNavigator();
 
@@ -99,6 +100,11 @@ export default function App() {
         />
         <Stack.Screen name="FillForm" component={FillFormScreen} options={{ title: "Fill Form" }} />
         <Stack.Screen name="Outbox" component={OutboxScreen} options={{ title: "Outbox" }} />
+        <Stack.Screen
+          name="SelfCertApprovals"
+          component={SelfCertApprovalsScreen}
+          options={{ title: "Self Cert Approvals" }}
+        />
       </Stack.Navigator>
     </NavigationContainer>
   );

@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useState } from "react";
 import {
   View,
   Text,
@@ -15,7 +15,7 @@ import {
   removeOutboxItem,
   updateOutboxItem,
 } from "../services/outboxQueue";
-import { syncChecklistSubmission } from "../services/checklistSync";
+import { syncOutboxItem } from "../services/outboxSync";
 
 function formatTimestamp(isoText) {
   if (!isoText) return "";
@@ -30,6 +30,27 @@ export default function OutboxScreen() {
   const [retryingId, setRetryingId] = useState("");
   const [retryingAll, setRetryingAll] = useState(false);
   const isFocused = useIsFocused();
+
+  const typeCounts = useMemo(() => {
+    const counts = {
+      checklist: 0,
+      nearMiss: 0,
+      selfCert: 0,
+      approvals: 0,
+      other: 0,
+    };
+
+    for (const item of items) {
+      const type = String(item?.type || "checklist-submit");
+      if (type === "checklist-submit") counts.checklist += 1;
+      else if (type === "near-miss-submit") counts.nearMiss += 1;
+      else if (type === "self-cert-submit") counts.selfCert += 1;
+      else if (type === "self-cert-approve") counts.approvals += 1;
+      else counts.other += 1;
+    }
+
+    return counts;
+  }, [items]);
 
   const loadItems = useCallback(async () => {
     setLoading(true);
@@ -62,7 +83,7 @@ export default function OutboxScreen() {
         lastError: "",
       }));
 
-      await syncChecklistSubmission(item.data);
+      await syncOutboxItem(item);
       await removeOutboxItem(item.id);
       await loadItems();
     } catch (error) {
@@ -97,7 +118,7 @@ export default function OutboxScreen() {
         }));
 
         try {
-          await syncChecklistSubmission(item.data);
+          await syncOutboxItem(item);
           await removeOutboxItem(item.id);
         } catch (error) {
           await updateOutboxItem(item.id, (prev) => ({
@@ -115,12 +136,19 @@ export default function OutboxScreen() {
   }
 
   function renderItem({ item }) {
-    const contractName =
-      item?.data?.checklistPayload?.contract_name || item?.data?.checklistPayload?.location || "Contract";
+    const type = String(item?.type || "checklist-submit");
+    const titleByType = {
+      "checklist-submit": item?.data?.checklistPayload?.contract_name || item?.data?.checklistPayload?.location || "Checklist Submission",
+      "near-miss-submit": item?.title || item?.data?.payload?.site || "Near Miss",
+      "self-cert-submit": item?.title || item?.data?.payload?.name || "Self Cert",
+      "self-cert-approve": item?.title || "Self Cert Approval",
+    };
+    const title = titleByType[type] || "Queued Item";
 
     return (
       <View style={styles.card}>
-        <Text style={styles.title}>{contractName}</Text>
+        <Text style={styles.title}>{title}</Text>
+        <Text style={styles.meta}>Type: {type}</Text>
         <Text style={styles.meta}>Created: {formatTimestamp(item.createdAt)}</Text>
         <Text style={styles.meta}>Status: {item.status || "queued"}</Text>
         <Text style={styles.meta}>Retries: {Number(item.retries || 0)}</Text>
@@ -148,6 +176,14 @@ export default function OutboxScreen() {
         >
           <Text style={styles.retryAllText}>{retryingAll ? "Retrying..." : "Retry All"}</Text>
         </TouchableOpacity>
+      </View>
+
+      <View style={styles.breakdownRow}>
+        <Text style={styles.breakdownText}>Checklist: {typeCounts.checklist}</Text>
+        <Text style={styles.breakdownText}>Near Miss: {typeCounts.nearMiss}</Text>
+        <Text style={styles.breakdownText}>Self Cert: {typeCounts.selfCert}</Text>
+        <Text style={styles.breakdownText}>Approvals: {typeCounts.approvals}</Text>
+        {typeCounts.other > 0 ? <Text style={styles.breakdownText}>Other: {typeCounts.other}</Text> : null}
       </View>
 
       <FlatList
@@ -178,6 +214,21 @@ const styles = StyleSheet.create({
     fontSize: 20,
     fontWeight: "700",
     color: "#0f172a",
+  },
+  breakdownRow: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: 8,
+    marginBottom: 10,
+  },
+  breakdownText: {
+    fontSize: 12,
+    color: "#334155",
+    backgroundColor: "#f1f5f9",
+    borderRadius: 999,
+    paddingHorizontal: 10,
+    paddingVertical: 4,
+    fontWeight: "600",
   },
   retryAllButton: {
     backgroundColor: "#007aff",
