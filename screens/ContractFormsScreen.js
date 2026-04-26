@@ -7,12 +7,32 @@ const FALLBACK_FORMS = [
   {
     id: "roller_inspection",
     templateCode: "PLANT_DAILY",
-    title: "Roller Inspection",
+    title: "Plant Daily Checklist",
     detail: "Complete daily roller checklist",
+    category: "Plant",
   },
 ];
 
-export default function ContractFormsScreen({ navigation }) {
+function parseTemplateCategoryFromDescription(description) {
+  const text = String(description || "");
+  const markerMatch = text.match(/^\s*\[Category:\s*([^\]]+?)\]\s*/i);
+  const legacyMatch = text.match(/^\s*Category:\s*(.+?)\s*\|/i);
+  return String(markerMatch?.[1] || legacyMatch?.[1] || "").trim();
+}
+
+function stripTemplateRoutingMetadata(description) {
+  const text = String(description || "");
+  return text
+    .replace(/^\s*\[Category:\s*[^\]]+\]\s*/i, "")
+    .replace(/^\s*Category:\s*.+?\s*\|\s*/i, "")
+    .replace(/\[RouteRules:\s*[^\]]*\]\s*/gi, "")
+    .replace(/\[RouteType:\s*[^\]]+\]\s*/gi, "")
+    .replace(/\[RouteEmail:\s*[^\]]*\]\s*/gi, "")
+    .replace(/\[DriveFolder:\s*[^\]]*\]\s*/gi, "")
+    .trim();
+}
+
+export default function ContractFormsScreen({ navigation, route }) {
   const isFocused = useIsFocused();
   const [contracts, setContracts] = useState([]);
   const [selectedContract, setSelectedContract] = useState(null);
@@ -20,16 +40,20 @@ export default function ContractFormsScreen({ navigation }) {
   const [refreshing, setRefreshing] = useState(false);
   const [message, setMessage] = useState("");
   const [copyingFormId, setCopyingFormId] = useState("");
+  const entryPoint = String(route?.params?.entryPoint || "");
+  const isPlantEntryPoint = entryPoint === "daily_plant_checks";
 
   useEffect(() => {
     if (isFocused) {
-      if (selectedContract?.id) {
+      if (isPlantEntryPoint) {
+        fetchPlantAssignedForms({ showSpinner: false });
+      } else if (selectedContract?.id) {
         fetchAssignedForms(selectedContract, { showSpinner: false });
       } else {
         fetchContracts({ showSpinner: false });
       }
     }
-  }, [isFocused, selectedContract?.id]);
+  }, [isFocused, selectedContract?.id, isPlantEntryPoint]);
 
   async function fetchContracts(options = {}) {
     const showSpinner = options.showSpinner !== false;
@@ -111,22 +135,142 @@ export default function ContractFormsScreen({ navigation }) {
         .map((row) => ({
           id: row.id,
           templateCode: row.form_templates?.template_code || "PLANT_DAILY",
-          title: row.form_templates?.title || "Roller Inspection",
-          detail: row.form_templates?.description || "Complete daily roller checklist",
+          title: row.form_templates?.title || "Plant Daily Checklist",
+          detail:
+            stripTemplateRoutingMetadata(row.form_templates?.description) ||
+            "Complete daily roller checklist",
+          category:
+            parseTemplateCategoryFromDescription(row.form_templates?.description) ||
+            (String(row.form_templates?.template_code || "").toLowerCase().includes("plant") ? "Plant" : "Operational"),
         }))
         .filter((row) => Boolean(row.id));
 
-      setForms(mapped.length ? mapped : FALLBACK_FORMS);
+      const isPlantEntryPoint = String(route?.params?.entryPoint || "") === "daily_plant_checks";
+      const entryPointFiltered = isPlantEntryPoint
+        ? mapped.filter((row) => String(row.category || "").trim().toLowerCase() === "plant")
+        : mapped;
+
+      setForms(entryPointFiltered.length ? entryPointFiltered : FALLBACK_FORMS);
 
       if (!mapped.length) {
         setMessage("No specific forms assigned. Showing default form.");
+      } else if (isPlantEntryPoint && !entryPointFiltered.length) {
+        setMessage("No Plant checklists are assigned for this contract. Showing default Plant checklist.");
       }
     } finally {
       if (showSpinner) setRefreshing(false);
     }
   }
 
-  const showContractsLayer = useMemo(() => !selectedContract, [selectedContract]);
+  async function fetchPlantAssignedForms(options = {}) {
+    const showSpinner = options.showSpinner !== false;
+    if (showSpinner) setRefreshing(true);
+    setMessage("");
+
+    try {
+      const {
+        data: { user },
+      } = await supabase.auth.getUser();
+
+      const [contractsRes, roleRes, teamRes] = await Promise.all([
+        supabase
+          .from("contracts")
+          .select("id, name, contract_name, contract_number, client, status")
+          .order("created_at", { ascending: false }),
+        user?.id
+          ? supabase.from("app_user_roles").select("role").eq("user_id", user.id).maybeSingle()
+          : Promise.resolve({ data: null, error: null }),
+        user?.id
+          ? supabase.from("contract_team_roles").select("contract_id").eq("user_id", user.id)
+          : Promise.resolve({ data: [], error: null }),
+      ]);
+
+      if (contractsRes.error || roleRes.error || teamRes.error) {
+        setMessage(
+          contractsRes.error?.message || roleRes.error?.message || teamRes.error?.message || "Could not load contracts"
+        );
+        setContracts([]);
+        setForms(FALLBACK_FORMS);
+        return;
+      }
+
+      const role = String(roleRes.data?.role || "viewer").toLowerCase();
+      const isPrivileged = role === "admin" || role === "manager";
+      const assignedIds = new Set((teamRes.data || []).map((row) => row.contract_id));
+
+      const availableContracts = (contractsRes.data || []).filter((row) => {
+        if (isPrivileged) return true;
+        return assignedIds.has(row.id);
+      });
+
+      const mappedContracts = availableContracts.map((row) => ({
+        id: row.id,
+        contractNo: row.contract_number || "-",
+        contractName: row.name || row.contract_name || row.contract_number || "Contract",
+      }));
+
+      setContracts(mappedContracts);
+
+      if (!mappedContracts.length) {
+        setForms(FALLBACK_FORMS);
+        setMessage("No contracts assigned to your account yet.");
+        return;
+      }
+
+      const contractIds = mappedContracts.map((row) => row.id);
+      const byContractId = new Map(mappedContracts.map((row) => [row.id, row]));
+
+      const { data, error } = await supabase
+        .from("contract_required_forms")
+        .select("id, contract_id, form_template_id, is_active, form_templates(template_code, title, description)")
+        .in("contract_id", contractIds)
+        .eq("is_active", true);
+
+      if (error) {
+        setMessage(error.message || "Could not load assigned checklists.");
+        setForms(FALLBACK_FORMS);
+        return;
+      }
+
+      const mapped = (data || [])
+        .map((row) => {
+          const contract = byContractId.get(row.contract_id);
+          const title = row.form_templates?.title || "Plant Daily Checklist";
+          const detail =
+            stripTemplateRoutingMetadata(row.form_templates?.description) ||
+            "Complete daily roller checklist";
+          const category =
+            parseTemplateCategoryFromDescription(row.form_templates?.description) ||
+            (String(row.form_templates?.template_code || "").toLowerCase().includes("plant") ? "Plant" : "Operational");
+
+          return {
+            id: row.id,
+            contractId: row.contract_id,
+            contractNo: contract?.contractNo || "-",
+            contractName: contract?.contractName || "Contract",
+            templateCode: row.form_templates?.template_code || "PLANT_DAILY",
+            title,
+            detail: `${detail} | ${contract?.contractName || "Contract"}`,
+            category,
+          };
+        })
+        .filter((row) => Boolean(row.id));
+
+      const plantOnly = mapped.filter((row) => String(row.category || "").trim().toLowerCase() === "plant");
+      setForms(plantOnly.length ? plantOnly : FALLBACK_FORMS);
+
+      if (!plantOnly.length) {
+        setMessage("No Plant checklists are assigned to your contracts. Showing default Plant checklist.");
+      }
+    } finally {
+      if (showSpinner) setRefreshing(false);
+    }
+  }
+
+  const showContractsLayer = useMemo(
+    () => !selectedContract && !isPlantEntryPoint,
+    [selectedContract, isPlantEntryPoint]
+  );
 
   function openContract(contract) {
     setSelectedContract(contract);
@@ -134,12 +278,22 @@ export default function ContractFormsScreen({ navigation }) {
   }
 
   function backToContracts() {
+    if (isPlantEntryPoint) {
+      navigation.goBack();
+      return;
+    }
+
     setSelectedContract(null);
     setForms([]);
     setMessage("");
   }
 
   function onPullRefresh() {
+    if (isPlantEntryPoint) {
+      fetchPlantAssignedForms({ showSpinner: true });
+      return;
+    }
+
     if (showContractsLayer) {
       fetchContracts({ showSpinner: true });
       return;
@@ -151,8 +305,8 @@ export default function ContractFormsScreen({ navigation }) {
   function buildFillFormPayload(item, launch) {
     return {
       id: item.id,
-      contractNo: selectedContract?.contractNo,
-      contractName: selectedContract?.contractName,
+      contractNo: selectedContract?.contractNo || item.contractNo,
+      contractName: selectedContract?.contractName || item.contractName,
       title: item.title,
       detail: item.detail,
       templateCode: item.templateCode,
@@ -170,7 +324,8 @@ export default function ContractFormsScreen({ navigation }) {
   }
 
   async function handleStartCopy(item) {
-    if (!selectedContract?.id) return;
+    const contractId = selectedContract?.id || item.contractId;
+    if (!contractId) return;
 
     setCopyingFormId(item.id);
     try {
@@ -179,7 +334,7 @@ export default function ContractFormsScreen({ navigation }) {
         .select(
           "id, created_at, sheet_version, machine_type, machine_reg, asset_no, serial_no, machine_hours, checklist, notes"
         )
-        .eq("contract_id", selectedContract.id)
+        .eq("contract_id", contractId)
         .order("created_at", { ascending: false })
         .limit(1)
         .maybeSingle();
@@ -225,7 +380,11 @@ export default function ContractFormsScreen({ navigation }) {
       {showContractsLayer ? (
         <>
           <Text style={styles.title}>Contracts</Text>
-          <Text style={styles.subtitle}>Select a contract before choosing a form.</Text>
+          <Text style={styles.subtitle}>
+            {entryPoint === "daily_plant_checks"
+              ? "Plant Daily Checklists: select a contract before choosing a checklist."
+              : "Select a contract before choosing a template."}
+          </Text>
 
           {message ? <Text style={styles.message}>{message}</Text> : null}
 
@@ -256,7 +415,7 @@ export default function ContractFormsScreen({ navigation }) {
             </View>
           </View>
 
-          <Text style={styles.title}>Assigned Forms</Text>
+          <Text style={styles.title}>{entryPoint === "daily_plant_checks" ? "Plant Daily Checklists" : "Templates"}</Text>
           {message ? <Text style={styles.message}>{message}</Text> : null}
 
           <FlatList

@@ -597,6 +597,13 @@ export default function HomeScreen({ navigation }) {
         <Text style={styles.buttonPrimaryText}>Contracts</Text>
       </TouchableOpacity>
 
+      <TouchableOpacity
+        style={styles.buttonQuaternary}
+        onPress={() => navigation.navigate("ContractForms", { entryPoint: "daily_plant_checks" })}
+      >
+        <Text style={styles.buttonQuaternaryText}>Plant Daily Checklists</Text>
+      </TouchableOpacity>
+
       <TouchableOpacity style={styles.buttonSecondary} onPress={openNearMissModal}>
         <Text style={styles.buttonSecondaryText}>Report A Near Miss</Text>
       </TouchableOpacity>
@@ -607,6 +614,14 @@ export default function HomeScreen({ navigation }) {
 
       <TouchableOpacity style={styles.signOutButton} onPress={handleSignOut}>
         <Text style={styles.signOutText}>Sign Out</Text>
+      </TouchableOpacity>
+
+      <TouchableOpacity
+        style={styles.bottomTabButton}
+        onPress={() => navigation.navigate("MyDocuments")}
+      >
+        <Ionicons name="documents-outline" size={18} color="#0f172a" />
+        <Text style={styles.bottomTabButtonText}>My Documents</Text>
       </TouchableOpacity>
 
       <Modal visible={nearMissVisible} transparent animationType="slide" onRequestClose={() => setNearMissVisible(false)}>
@@ -1002,6 +1017,7 @@ const styles = StyleSheet.create({
     flex: 1,
     paddingHorizontal: 20,
     paddingTop: 60,
+    paddingBottom: 78,
     alignItems: "center",
     backgroundColor: "#fff",
   },
@@ -1101,6 +1117,20 @@ const styles = StyleSheet.create({
     fontWeight: "600",
     textAlign: "center",
   },
+  buttonQuaternary: {
+    backgroundColor: "#14532d",
+    paddingVertical: 14,
+    paddingHorizontal: 30,
+    borderRadius: 10,
+    marginBottom: 12,
+    width: "90%",
+  },
+  buttonQuaternaryText: {
+    color: "#fff",
+    fontSize: 18,
+    fontWeight: "600",
+    textAlign: "center",
+  },
   buttonTertiary: {
     backgroundColor: "#1d4ed8",
     paddingVertical: 14,
@@ -1122,6 +1152,25 @@ const styles = StyleSheet.create({
     color: "red",
     fontSize: 18,
     fontWeight: "600",
+  },
+  bottomTabButton: {
+    position: "absolute",
+    left: 16,
+    right: 16,
+    bottom: 14,
+    height: 48,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: "#e2e8f0",
+    backgroundColor: "#f8fafc",
+    alignItems: "center",
+    justifyContent: "center",
+    flexDirection: "row",
+    gap: 8,
+  },
+  bottomTabButtonText: {
+    color: "#0f172a",
+    fontWeight: "700",
   },
   modalBackdrop: {
     flex: 1,
