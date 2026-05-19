@@ -2,6 +2,7 @@ import React, { useState, useEffect, useRef } from "react";
 import {
   View,
   Text,
+  Image,
   TextInput,
   TouchableOpacity,
   StyleSheet,
@@ -145,12 +146,10 @@ export default function LoginScreen({ navigation }) {
     >
       <ScrollView contentContainerStyle={styles.container}>
         <Animated.View style={{ opacity: logoOpacity, alignItems: "center" }}>
-          <View style={styles.logoCircle}>
-            <Text style={styles.logoText}>CP</Text>
-          </View>
+          <Image source={require("../assets/contracting-app.png")} style={styles.logoImage} resizeMode="contain" />
         </Animated.View>
 
-        <Text style={styles.title}>Contracts Portal</Text>
+        <Text style={styles.title}>Contracting App</Text>
 
         <TextInput
           placeholder="Email"
@@ -202,19 +201,10 @@ const styles = StyleSheet.create({
     padding: 25,
     paddingTop: 60,
   },
-  logoCircle: {
-    width: 96,
-    height: 96,
-    borderRadius: 48,
-    backgroundColor: "#007aff",
-    alignItems: "center",
-    justifyContent: "center",
+  logoImage: {
+    width: 124,
+    height: 124,
     marginBottom: 14,
-  },
-  logoText: {
-    color: "#fff",
-    fontSize: 30,
-    fontWeight: "700",
   },
   title: {
     fontSize: 28,

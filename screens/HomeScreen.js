@@ -67,13 +67,22 @@ export default function HomeScreen({ navigation }) {
       return;
     }
 
-    const { count } = await supabase
-      .from("self_cert_forms")
-      .select("id", { count: "exact", head: true })
-      .eq("line_manager_user_id", user.id)
-      .eq("status", "pending_manager_approval");
+    const [selfCertRes, timesheetRes] = await Promise.all([
+      supabase
+        .from("self_cert_forms")
+        .select("id", { count: "exact", head: true })
+        .eq("line_manager_user_id", user.id)
+        .eq("status", "pending_manager_approval"),
+      supabase
+        .from("timesheet_forms")
+        .select("id", { count: "exact", head: true })
+        .eq("line_manager_user_id", user.id)
+        .eq("status", "pending_manager_approval"),
+    ]);
 
-    setAttentionCount(Number(count || 0));
+    const selfCertCount = Number(selfCertRes.count || 0);
+    const timesheetCount = Number(timesheetRes.count || 0);
+    setAttentionCount(selfCertCount + timesheetCount);
   }, []);
 
   const processOutbox = useCallback(async () => {
@@ -569,7 +578,7 @@ export default function HomeScreen({ navigation }) {
 
   return (
     <View style={styles.container}>
-      <TouchableOpacity style={styles.attentionButton} onPress={() => navigation.navigate("SelfCertApprovals") }>
+      <TouchableOpacity style={styles.attentionButton} onPress={() => navigation.navigate("Approvals")}>
         <Ionicons name="notifications-outline" size={22} color="#0f172a" />
         {attentionCount > 0 ? (
           <View style={styles.attentionBadge}>
@@ -587,7 +596,7 @@ export default function HomeScreen({ navigation }) {
         ) : null}
       </TouchableOpacity>
 
-      <Text style={styles.title}>Contracts App</Text>
+      <Text style={styles.title}>Contracting App</Text>
       <Text style={styles.welcome}>Manage active contracts and complete inspections.</Text>
 
       <TouchableOpacity
@@ -616,13 +625,23 @@ export default function HomeScreen({ navigation }) {
         <Text style={styles.signOutText}>Sign Out</Text>
       </TouchableOpacity>
 
-      <TouchableOpacity
-        style={styles.bottomTabButton}
-        onPress={() => navigation.navigate("MyDocuments")}
-      >
-        <Ionicons name="documents-outline" size={18} color="#0f172a" />
-        <Text style={styles.bottomTabButtonText}>My Documents</Text>
-      </TouchableOpacity>
+      <View style={styles.bottomTabsRow}>
+        <TouchableOpacity
+          style={styles.bottomTabButton}
+          onPress={() => navigation.navigate("Timesheet")}
+        >
+          <Ionicons name="time-outline" size={18} color="#0f172a" />
+          <Text style={styles.bottomTabButtonText}>Timesheet</Text>
+        </TouchableOpacity>
+
+        <TouchableOpacity
+          style={styles.bottomTabButton}
+          onPress={() => navigation.navigate("MyDocuments")}
+        >
+          <Ionicons name="documents-outline" size={18} color="#0f172a" />
+          <Text style={styles.bottomTabButtonText}>My Documents</Text>
+        </TouchableOpacity>
+      </View>
 
       <Modal visible={nearMissVisible} transparent animationType="slide" onRequestClose={() => setNearMissVisible(false)}>
         <View style={styles.modalBackdrop}>
@@ -1153,11 +1172,14 @@ const styles = StyleSheet.create({
     fontSize: 18,
     fontWeight: "600",
   },
+  bottomTabsRow: {
+    marginTop: 14,
+    width: "90%",
+    flexDirection: "row",
+    gap: 10,
+  },
   bottomTabButton: {
-    position: "absolute",
-    left: 16,
-    right: 16,
-    bottom: 14,
+    flex: 1,
     height: 48,
     borderRadius: 12,
     borderWidth: 1,

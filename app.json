@@ -1,13 +1,13 @@
 {
   "expo": {
-    "name": "Contracts App",
+    "name": "Contracting App",
     "slug": "contracts-portal",
     "version": "1.0.0",
     "orientation": "portrait",
-    "icon": "./assets/icon.png",
+    "icon": "./assets/contracting-app.png",
     "userInterfaceStyle": "light",
     "splash": {
-      "image": "./assets/splash.png",
+      "image": "./assets/contracting-app.png",
       "resizeMode": "contain",
       "backgroundColor": "#ffffff"
     },
@@ -23,7 +23,7 @@
     },
     "android": {
       "adaptiveIcon": {
-        "foregroundImage": "./assets/adaptive-icon.png",
+        "foregroundImage": "./assets/contracting-app.png",
         "backgroundColor": "#ffffff"
       },
       "package": "com.sitebatch.contracts"
@@ -36,6 +36,9 @@
       "eas": {
         "projectId": "18147424-66e5-474a-8390-ffdfa94162af"
       }
-    }
+    },
+    "plugins": [
+      "@react-native-community/datetimepicker"
+    ]
   }
 }

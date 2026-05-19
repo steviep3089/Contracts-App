@@ -48,6 +48,18 @@ export async function syncSelfCertApproval({ payload }) {
   return data;
 }
 
+export async function syncTimesheetApproval({ payload }) {
+  const { data, error } = await supabase.functions.invoke("approve-timesheet", {
+    body: payload,
+  });
+
+  if (error || data?.success === false) {
+    throw new Error(error?.message || data?.error || "Could not approve timesheet.");
+  }
+
+  return data;
+}
+
 export async function syncOutboxItem(item) {
   const type = String(item?.type || "checklist-submit");
 
@@ -65,6 +77,10 @@ export async function syncOutboxItem(item) {
 
   if (type === "self-cert-approve") {
     return syncSelfCertApproval(item?.data || {});
+  }
+
+  if (type === "timesheet-approve") {
+    return syncTimesheetApproval(item?.data || {});
   }
 
   throw new Error(`Unsupported outbox item type: ${type}`);

@@ -45,7 +45,7 @@ export default function OutboxScreen() {
       if (type === "checklist-submit") counts.checklist += 1;
       else if (type === "near-miss-submit") counts.nearMiss += 1;
       else if (type === "self-cert-submit") counts.selfCert += 1;
-      else if (type === "self-cert-approve") counts.approvals += 1;
+      else if (type === "self-cert-approve" || type === "timesheet-approve") counts.approvals += 1;
       else counts.other += 1;
     }
 
@@ -142,6 +142,7 @@ export default function OutboxScreen() {
       "near-miss-submit": item?.title || item?.data?.payload?.site || "Near Miss",
       "self-cert-submit": item?.title || item?.data?.payload?.name || "Self Cert",
       "self-cert-approve": item?.title || "Self Cert Approval",
+      "timesheet-approve": item?.title || "Timesheet Approval",
     };
     const title = titleByType[type] || "Queued Item";
 

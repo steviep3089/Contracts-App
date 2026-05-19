@@ -7,7 +7,7 @@ import { supabase } from "../supabase";
 import { enqueueOutboxItem } from "../services/outboxQueue";
 import { syncChecklistSubmission } from "../services/checklistSync";
 
-const STATUS_OPTIONS = ["X", "Y", "N/A", "R"];
+const STATUS_OPTIONS = ["X", "Y", "N/A"];
 const DEFECT_PHOTO_MAX_FILES = 5;
 const DEFECT_CATEGORIES = ["Health and Safety", "Environmental", "Quality", "Other"];
 const DEFECT_PRIORITIES = [
@@ -24,12 +24,14 @@ const DEFECT_PRIORITIES = [
   },
 ];
 
-const CHECK_ITEMS = [
+const DEFAULT_CHECK_ITEMS = [
   "Engine Oil - Level Correct",
   "Engine - Free From Leaks, Excessive Noise",
   "Coolant Level (Antifreeze)",
   "Fan Belt Condition",
+  "Gear Box Oil - Level Correct",
   "Exhaust Visual Inspection, Free from leaks",
+  "Re-Gen Gauge (Volvo Only)",
   "Adblue Level",
   "Service Sticker",
   "Hand Rails, Steps, Guards & Covers",
@@ -77,8 +79,130 @@ const CHECK_ITEMS = [
   "Donkey Engine Pump & Clutch Condition",
 ];
 
-function buildInitialChecklist() {
-  return CHECK_ITEMS.reduce((acc, item) => {
+function buildChecklistState(items, existing = {}) {
+  return (items || []).reduce((acc, item) => {
+    acc[item] = existing?.[item] || "";
+    return acc;
+  }, {});
+}
+
+function normalizeChecklistImportText(value) {
+  return String(value || "")
+    .replace(/\u00a0/g, " ")
+    .replace(/[\t ]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function normalizeChecklistLabelCanonical(value) {
+  const normalized = normalizeChecklistImportText(value);
+  if (!normalized) return "";
+  if (/^360\s+vision\s*-\s*mirrors/i.test(normalized)) return normalized;
+  if (/^vision\s*-\s*mirrors/i.test(normalized)) return `360 ${normalized}`;
+  return normalized;
+}
+
+function formatContractChoice(option) {
+  if (!option) return "";
+  const number = String(option.contractNo || "").trim();
+  const name = String(option.contractName || "").trim();
+  if (number && number !== "-" && name) return `${number} - ${name}`;
+  return name || number || "";
+}
+
+function inferMachineTypeFromForm(form) {
+  const hint = `${String(form?.title || "")} ${String(form?.templateCode || "")}`.toLowerCase();
+  if (hint.includes("3cx") || hint.includes("jcb")) return "3CX";
+  if (hint.includes("paver")) return "Paver";
+  if (hint.includes("grab")) return "Grab";
+  if (hint.includes("low loader") || hint.includes("low_loader") || hint.includes("lowloader")) return "Low Loader";
+  if (hint.includes("spray tanker") || hint.includes("spray_tanker")) return "Spray Tanker";
+  if (hint.includes("roller")) return "Roller";
+  return "Roller";
+}
+
+function normalizeTemplateChecklistPayload(templateChecklist) {
+  if (Array.isArray(templateChecklist)) return templateChecklist;
+  if (!templateChecklist || typeof templateChecklist !== "object") return [];
+
+  if (Array.isArray(templateChecklist.rows)) return templateChecklist.rows;
+  if (Array.isArray(templateChecklist.items)) return templateChecklist.items;
+  if (Array.isArray(templateChecklist.checklist)) return templateChecklist.checklist;
+  if (Array.isArray(templateChecklist.lines)) return templateChecklist.lines;
+  if (templateChecklist.left || templateChecklist.right) return [templateChecklist];
+
+  const keys = Object.keys(templateChecklist).filter((key) => normalizeChecklistImportText(key));
+  if (keys.length > 0) {
+    return keys.map((label) => ({ label: normalizeChecklistLabelCanonical(label) }));
+  }
+
+  return [];
+}
+
+function normalizeChecklistMarkerValue(marker) {
+  return normalizeChecklistImportText(marker || "").toUpperCase();
+}
+
+function isSafetyCriticalChecklistMarker(marker) {
+  return normalizeChecklistMarkerValue(marker) === "S";
+}
+
+function extractTemplateSafetyCriticalLabels(templateChecklist) {
+  const normalizedChecklist = normalizeTemplateChecklistPayload(templateChecklist);
+  if (!Array.isArray(normalizedChecklist) || normalizedChecklist.length === 0) return [];
+
+  const set = new Set();
+  const maybeAdd = (label, marker) => {
+    const normalizedLabel = normalizeChecklistLabelCanonical(label);
+    if (!normalizedLabel) return;
+    if (!isSafetyCriticalChecklistMarker(marker)) return;
+    set.add(normalizedLabel);
+  };
+
+  normalizedChecklist.forEach((item) => {
+    if (!item || typeof item !== "object") return;
+    if (item.left || item.right) {
+      maybeAdd(item?.left?.label || item?.left?.name || item?.left?.item || "", item?.left?.marker || "");
+      maybeAdd(item?.right?.label || item?.right?.name || item?.right?.item || "", item?.right?.marker || "");
+      return;
+    }
+
+    maybeAdd(item.label || item.name || item.item || "", item.marker || "");
+  });
+
+  return Array.from(set);
+}
+
+function extractTemplateChecklistLabels(templateChecklist) {
+  const normalizedChecklist = normalizeTemplateChecklistPayload(templateChecklist);
+  if (!Array.isArray(normalizedChecklist) || normalizedChecklist.length === 0) return [];
+
+  const fromRows = normalizedChecklist
+    .flatMap((item) => {
+      if (!item || typeof item !== "object") return [];
+      const leftLabel = normalizeChecklistLabelCanonical(item?.left?.label || "");
+      const rightLabel = normalizeChecklistLabelCanonical(item?.right?.label || "");
+      return [leftLabel, rightLabel].filter(Boolean);
+    })
+    .filter(Boolean);
+
+  if (fromRows.length > 0) {
+    return fromRows;
+  }
+
+  const fromFlat = normalizedChecklist
+    .map((item) => {
+      if (typeof item === "string") return normalizeChecklistLabelCanonical(item);
+      if (!item || typeof item !== "object") return "";
+      return normalizeChecklistLabelCanonical(item.label || item.name || item.item || "");
+    })
+    .filter(Boolean);
+
+  return fromFlat;
+}
+
+function buildInitialChecklist(items = DEFAULT_CHECK_ITEMS) {
+  return (items || []).reduce((acc, item) => {
     acc[item] = "";
     return acc;
   }, {});
@@ -123,8 +247,65 @@ function isTransportError(error) {
 export default function FillFormScreen({ route, navigation }) {
   const form = route?.params?.form;
   const launch = form?.launch || null;
+  const contractLocked = form?.contractLocked !== false;
+  const contractOptions = useMemo(() => {
+    const fromForm = Array.isArray(form?.contractOptions) ? form.contractOptions : [];
+    const normalized = fromForm
+      .map((item) => ({
+        id: item?.id || null,
+        contractNo: String(item?.contractNo || "").trim(),
+        contractName: String(item?.contractName || "").trim(),
+      }))
+      .filter((item) => Boolean(item.contractNo || item.contractName));
+
+    if (normalized.length > 0) return normalized;
+
+    const fallbackNo = String(form?.contractNo || "").trim();
+    const fallbackName = String(form?.contractName || "").trim();
+    if (!fallbackNo && !fallbackName) return [];
+    return [
+      {
+        id: form?.contractId || null,
+        contractNo: fallbackNo,
+        contractName: fallbackName,
+      },
+    ];
+  }, [form?.contractId, form?.contractName, form?.contractNo, form?.contractOptions]);
+  const defaultContractChoice = useMemo(() => {
+    if (contractOptions.length === 0) return null;
+    if (form?.contractId) {
+      const match = contractOptions.find((item) => item.id === form.contractId);
+      if (match) return match;
+    }
+    if (form?.contractNo) {
+      const match = contractOptions.find((item) => item.contractNo === String(form.contractNo).trim());
+      if (match) return match;
+    }
+    return contractOptions[0];
+  }, [contractOptions, form?.contractId, form?.contractNo]);
+  const checklistItems = useMemo(() => {
+    const fromTemplate = extractTemplateChecklistLabels(form?.checklist);
+    return fromTemplate.length > 0 ? fromTemplate : DEFAULT_CHECK_ITEMS;
+  }, [form?.checklist]);
+  const safetyCriticalChecklistItemSet = useMemo(
+    () => new Set(extractTemplateSafetyCriticalLabels(form?.checklist)),
+    [form?.checklist]
+  );
+  const nonSafetyChecklistItems = useMemo(
+    () => checklistItems.filter((item) => !safetyCriticalChecklistItemSet.has(item)),
+    [checklistItems, safetyCriticalChecklistItemSet]
+  );
+  const defaultMachineType = useMemo(
+    () => inferMachineTypeFromForm(form),
+    [form?.templateCode, form?.title]
+  );
   const isFocused = useIsFocused();
-  const defaultContractLocation = form?.contractName || form?.contractNo || "ROLLER";
+  const defaultContractLocation =
+    defaultContractChoice?.contractName ||
+    defaultContractChoice?.contractNo ||
+    form?.contractName ||
+    form?.contractNo ||
+    "ROLLER";
   const lastLaunchTokenRef = useRef(null);
   const [version, setVersion] = useState("1");
   const [completedBy, setCompletedBy] = useState("");
@@ -134,9 +315,11 @@ export default function FillFormScreen({ route, navigation }) {
   const [assetTag, setAssetTag] = useState("");
   const [serialNo, setSerialNo] = useState("");
   const [machineHours, setMachineHours] = useState("");
-  const [machineType, setMachineType] = useState("Roller");
+  const [machineType, setMachineType] = useState(defaultMachineType);
   const [location, setLocation] = useState(defaultContractLocation);
-  const [checklist, setChecklist] = useState(buildInitialChecklist());
+  const [selectedContractChoice, setSelectedContractChoice] = useState(defaultContractChoice);
+  const [contractPickerVisible, setContractPickerVisible] = useState(false);
+  const [checklist, setChecklist] = useState(buildInitialChecklist(checklistItems));
   const [notes, setNotes] = useState("");
   const [assetDirectory, setAssetDirectory] = useState([]);
   const [assetLookupTrace, setAssetLookupTrace] = useState("");
@@ -149,15 +332,36 @@ export default function FillFormScreen({ route, navigation }) {
   const [defectSubmitting, setDefectSubmitting] = useState(false);
   const [saving, setSaving] = useState(false);
 
+  const selectedContractNumber = String(selectedContractChoice?.contractNo || form?.contractNo || "").trim();
+  const selectedContractName = String(
+    selectedContractChoice?.contractName ||
+      selectedContractChoice?.contractNo ||
+      form?.contractName ||
+      form?.contractNo ||
+      defaultContractLocation
+  ).trim();
+
   const defectFound = useMemo(
     () => Object.values(checklist).some((value) => value === "X"),
     [checklist]
   );
 
   const allMarkedChecked = useMemo(
-    () => CHECK_ITEMS.every((item) => checklist[item] === "Y"),
-    [checklist]
+    () => nonSafetyChecklistItems.length > 0 && nonSafetyChecklistItems.every((item) => checklist[item] === "Y"),
+    [checklist, nonSafetyChecklistItems]
   );
+
+  useEffect(() => {
+    setChecklist((prev) => buildChecklistState(checklistItems, prev));
+  }, [checklistItems]);
+
+  useEffect(() => {
+    setSelectedContractChoice(defaultContractChoice);
+  }, [defaultContractChoice]);
+
+  useEffect(() => {
+    setLocation(selectedContractName || defaultContractLocation);
+  }, [selectedContractName, defaultContractLocation]);
 
   const assetDirectoryLookup = useMemo(() => {
     const byMachineReg = new Map();
@@ -199,8 +403,8 @@ export default function FillFormScreen({ route, navigation }) {
         setAssetTag(String(source.asset_no || ""));
         setSerialNo(String(source.serial_no || ""));
         setMachineHours(source.machine_hours != null ? String(source.machine_hours) : "");
-        setMachineType(String(source.machine_type || "Roller"));
-        setChecklist({ ...buildInitialChecklist(), ...(source.checklist || {}) });
+        setMachineType(String(source.machine_type || defaultMachineType));
+        setChecklist(buildChecklistState(checklistItems, source.checklist || {}));
         setNotes(String(source.notes || ""));
         Alert.alert("Copied", "Copied from latest completed checklist for this contract. Date set to today.");
       } else {
@@ -209,12 +413,12 @@ export default function FillFormScreen({ route, navigation }) {
         setAssetTag("");
         setSerialNo("");
         setMachineHours("");
-        setMachineType("Roller");
-        setChecklist(buildInitialChecklist());
+        setMachineType(defaultMachineType);
+        setChecklist(buildInitialChecklist(checklistItems));
         setNotes("");
       }
     }
-  }, [isFocused, form?.id, defaultContractLocation, launch]);
+  }, [isFocused, form?.id, defaultContractLocation, defaultMachineType, launch]);
 
   async function initializeUserDefaults() {
     const {
@@ -422,7 +626,7 @@ export default function FillFormScreen({ route, navigation }) {
 
   function buildDefectDrafts() {
     const notesByItem = parseDefectNotesByChecklistItem(notes);
-    const defectItems = CHECK_ITEMS.filter((item) => checklist[item] === "X");
+    const defectItems = checklistItems.filter((item) => checklist[item] === "X");
 
     return defectItems.map((item, index) => ({
       id: `${index}-${item}`,
@@ -540,7 +744,8 @@ export default function FillFormScreen({ route, navigation }) {
   }
 
   function buildChecklistPayload(userId = null) {
-    const contractName = location.trim() || defaultContractLocation;
+    const contractName = selectedContractName || location.trim() || defaultContractLocation;
+    const contractNumber = selectedContractNumber || contractName;
     return {
       created_by: userId || null,
       sheet_version: version,
@@ -552,9 +757,11 @@ export default function FillFormScreen({ route, navigation }) {
       serial_no: serialNo.trim() || null,
       machine_hours: machineHours ? Number(machineHours) : null,
       machine_type: machineType.trim() || "Roller",
+      template_code: String(form?.templateCode || form?.id || "").trim() || null,
+      template_title: String(form?.title || "").trim() || null,
       location: contractName,
       contract_name: contractName,
-      contract_number: form?.contractNo || defaultContractLocation,
+      contract_number: contractNumber,
       checklist,
       notes: notes.trim() || null,
       has_defects: defectFound,
@@ -570,8 +777,8 @@ export default function FillFormScreen({ route, navigation }) {
       priority: Number(row.priority) || 3,
       submitted_by: completedBy || "Contracts App",
       status: "Reported",
-      contract_name: location || defaultContractLocation,
-      contract_number: form?.contractNo || defaultContractLocation,
+      contract_name: selectedContractName || location || defaultContractLocation,
+      contract_number: selectedContractNumber || selectedContractName || defaultContractLocation,
       checklist_item: row.checklist_item,
       machine_reg: machineReg || null,
       asset_no: assetTag || null,
@@ -605,8 +812,8 @@ export default function FillFormScreen({ route, navigation }) {
     return user.id;
   }
 
-  async function enqueueSubmission({ checklistPayload, defectsPayload, reason }) {
-    await enqueueOutboxItem({ checklistPayload, defectsPayload });
+  async function enqueueSubmission({ checklistPayload, defectsPayload, formCode, reason }) {
+    await enqueueOutboxItem({ checklistPayload, defectsPayload, formCode });
     setDefectReviewVisible(false);
     Alert.alert(
       "Saved To Outbox",
@@ -652,6 +859,7 @@ export default function FillFormScreen({ route, navigation }) {
         await enqueueSubmission({
           checklistPayload,
           defectsPayload,
+          formCode: form?.templateCode || form?.id || "roller_daily",
           reason: "No internet connection. Submission queued in Outbox and will sync when online.",
         });
         return;
@@ -665,6 +873,7 @@ export default function FillFormScreen({ route, navigation }) {
       const result = await syncChecklistSubmission({
         checklistPayload,
         defectsPayload,
+        formCode: form?.templateCode || form?.id || "roller_daily",
       });
 
       setDefectReviewVisible(false);
@@ -677,12 +886,16 @@ export default function FillFormScreen({ route, navigation }) {
           ? `Form saved. ${result.sentDefectCount} defect(s) sent to Maintenance Defect System.`
           : "Form saved. No defects were sent."
       );
+      if (result.routingWarning) {
+        Alert.alert("Routing Note", result.routingWarning);
+      }
     } catch (error) {
       const userId = await getCurrentUserId();
       if (userId && isTransportError(error)) {
         await enqueueSubmission({
           checklistPayload: buildChecklistPayload(userId),
           defectsPayload: buildDefectPayload(selected),
+          formCode: form?.templateCode || form?.id || "roller_daily",
           reason:
             "Could not reach the server. Submission queued in Outbox and can be retried manually anytime.",
         });
@@ -699,17 +912,19 @@ export default function FillFormScreen({ route, navigation }) {
     if (!allMarkedChecked) {
       Alert.alert(
         "Mark All As Checked",
-        "Are you sure you have checked all components and happy to proceed.",
+        "Are you sure you have checked all non-safety-critical components and happy to proceed.",
         [
           { text: "Cancel", style: "cancel" },
           {
             text: "Mark All",
             onPress: () => {
-              const completed = CHECK_ITEMS.reduce((acc, item) => {
-                acc[item] = "Y";
-                return acc;
-              }, {});
-              setChecklist(completed);
+              setChecklist((prev) => {
+                const next = { ...prev };
+                nonSafetyChecklistItems.forEach((item) => {
+                  next[item] = "Y";
+                });
+                return next;
+              });
             },
           },
         ]
@@ -717,15 +932,22 @@ export default function FillFormScreen({ route, navigation }) {
       return;
     }
 
-    const cleared = CHECK_ITEMS.reduce((acc, item) => {
-      acc[item] = "";
-      return acc;
-    }, {});
-    setChecklist(cleared);
+    setChecklist((prev) => {
+      const next = { ...prev };
+      nonSafetyChecklistItems.forEach((item) => {
+        next[item] = "";
+      });
+      return next;
+    });
   }
 
   async function submitForm() {
-    const unanswered = CHECK_ITEMS.filter((item) => !checklist[item]);
+    if (!contractLocked && !selectedContractChoice) {
+      Alert.alert("Missing Contract", "Please select an active contract before submitting this checklist.");
+      return;
+    }
+
+    const unanswered = checklistItems.filter((item) => !checklist[item]);
     if (unanswered.length > 0) {
       Alert.alert(
         "Checklist Incomplete",
@@ -766,6 +988,7 @@ export default function FillFormScreen({ route, navigation }) {
         await enqueueSubmission({
           checklistPayload,
           defectsPayload,
+          formCode: form?.templateCode || form?.id || "roller_daily",
           reason: "No internet connection. Submission queued in Outbox and will sync when online.",
         });
         return;
@@ -776,7 +999,14 @@ export default function FillFormScreen({ route, navigation }) {
         return;
       }
 
-      await syncChecklistSubmission({ checklistPayload, defectsPayload });
+      const result = await syncChecklistSubmission({
+        checklistPayload,
+        defectsPayload,
+        formCode: form?.templateCode || form?.id || "roller_daily",
+      });
+      if (result.routingWarning) {
+        Alert.alert("Routing Note", result.routingWarning);
+      }
       showSuccess();
     } catch (err) {
       const userId = await getCurrentUserId();
@@ -784,6 +1014,7 @@ export default function FillFormScreen({ route, navigation }) {
         await enqueueSubmission({
           checklistPayload: buildChecklistPayload(userId),
           defectsPayload: [],
+          formCode: form?.templateCode || form?.id || "roller_daily",
           reason:
             "Could not reach the server. Submission queued in Outbox and can be retried manually anytime.",
         });
@@ -798,7 +1029,7 @@ export default function FillFormScreen({ route, navigation }) {
 
   return (
     <ScrollView contentContainerStyle={styles.container}>
-      <Text style={styles.contract}>{form?.contractNo || "No Contract"}</Text>
+      <Text style={styles.contract}>{selectedContractNumber || "No Contract Selected"}</Text>
       <Text style={styles.title}>{form?.title || "Roller Inspection"}</Text>
 
       <Text style={styles.fieldLabel}>Version</Text>
@@ -829,31 +1060,82 @@ export default function FillFormScreen({ route, navigation }) {
       <TextInput style={styles.input} value={machineType} onChangeText={setMachineType} />
 
       <Text style={styles.fieldLabel}>Location</Text>
-      <TextInput
-        style={[styles.input, styles.inputReadonly]}
-        value={location || defaultContractLocation}
-        editable={false}
-        placeholder="Contract location"
-      />
+      {contractLocked ? (
+        <TextInput
+          style={[styles.input, styles.inputReadonly]}
+          value={location || defaultContractLocation}
+          editable={false}
+          placeholder="Contract location"
+        />
+      ) : (
+        <>
+          <TouchableOpacity style={styles.selectorButton} onPress={() => setContractPickerVisible(true)}>
+            <Text style={selectedContractChoice ? styles.selectorText : styles.selectorPlaceholder}>
+              {selectedContractChoice ? formatContractChoice(selectedContractChoice) : "Select active contract"}
+            </Text>
+          </TouchableOpacity>
+          <Modal
+            visible={contractPickerVisible}
+            transparent
+            animationType="fade"
+            onRequestClose={() => setContractPickerVisible(false)}
+          >
+            <View style={styles.modalBackdrop}>
+              <View style={styles.contractPickerCard}>
+                <Text style={styles.modalItem}>Select Active Contract</Text>
+                <ScrollView style={styles.contractPickerList}>
+                  {contractOptions.map((option) => {
+                    const selected = option.id === selectedContractChoice?.id && option.contractNo === selectedContractChoice?.contractNo;
+                    return (
+                      <TouchableOpacity
+                        key={`${option.id || option.contractNo || option.contractName}`}
+                        style={[styles.contractPickerOption, selected && styles.contractPickerOptionSelected]}
+                        onPress={() => {
+                          setSelectedContractChoice(option);
+                          setContractPickerVisible(false);
+                        }}
+                      >
+                        <Text style={[styles.contractPickerOptionText, selected && styles.contractPickerOptionTextSelected]}>
+                          {formatContractChoice(option)}
+                        </Text>
+                      </TouchableOpacity>
+                    );
+                  })}
+                </ScrollView>
+                <TouchableOpacity style={[styles.buttonInline, styles.buttonGhost]} onPress={() => setContractPickerVisible(false)}>
+                  <Text style={styles.buttonGhostText}>Close</Text>
+                </TouchableOpacity>
+              </View>
+            </View>
+          </Modal>
+        </>
+      )}
 
       <View style={styles.checklistHeaderRow}>
         <Text style={styles.sectionTitle}>Checklist Status</Text>
-        <TouchableOpacity style={styles.checkAllInline} onPress={handleMarkAllToggle}>
+        <TouchableOpacity
+          style={[styles.checkAllInline, nonSafetyChecklistItems.length === 0 && styles.checkAllInlineDisabled]}
+          onPress={handleMarkAllToggle}
+          disabled={nonSafetyChecklistItems.length === 0}
+        >
           <Text style={styles.checkAllBox}>{allMarkedChecked ? "[x]" : "[ ]"}</Text>
-          <Text style={styles.checkAllText}>Mark all as checked</Text>
+          <Text style={styles.checkAllText}>Mark all as checked (excludes S items)</Text>
         </TouchableOpacity>
       </View>
-      <Text style={styles.legend}>X Defect | Y Checked | N/A Not Applicable | R Replaced</Text>
+      <Text style={styles.legend}>X Defect | Y Checked | N/A Not Applicable | S Safety Critical (manual check only)</Text>
 
-      {CHECK_ITEMS.map((item) => (
-        <View key={item} style={styles.checkRow}>
-          <Text style={styles.checkLabel}>{item}</Text>
+      {checklistItems.map((item, idx) => (
+        <View key={`check_${idx}_${item}`} style={styles.checkRow}>
+          <View style={styles.checkLabelRow}>
+            {safetyCriticalChecklistItemSet.has(item) ? <Text style={styles.safetyMarker}>S</Text> : null}
+            <Text style={styles.checkLabel}>{item}</Text>
+          </View>
           <View style={styles.statusRow}>
             {STATUS_OPTIONS.map((status) => {
               const selected = checklist[item] === status;
               return (
                 <TouchableOpacity
-                  key={`${item}-${status}`}
+                  key={`check_${idx}_${item}-${status}`}
                   style={[styles.statusPill, selected && styles.statusPillSelected]}
                   onPress={() => setItemStatus(item, status)}
                 >
@@ -1095,6 +1377,9 @@ const styles = StyleSheet.create({
     alignItems: "center",
     gap: 4,
   },
+  checkAllInlineDisabled: {
+    opacity: 0.55,
+  },
   checkAllBox: {
     fontSize: 13,
     color: "#666",
@@ -1114,8 +1399,28 @@ const styles = StyleSheet.create({
   checkLabel: {
     fontSize: 13,
     fontWeight: "600",
-    marginBottom: 8,
     color: "#222",
+  },
+  checkLabelRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+    marginBottom: 8,
+  },
+  safetyMarker: {
+    minWidth: 20,
+    height: 20,
+    textAlign: "center",
+    textAlignVertical: "center",
+    borderWidth: 1,
+    borderColor: "#f59e0b",
+    borderRadius: 4,
+    color: "#92400e",
+    backgroundColor: "#fef3c7",
+    fontWeight: "700",
+    fontSize: 12,
+    overflow: "hidden",
+    lineHeight: 18,
   },
   statusRow: {
     flexDirection: "row",
@@ -1164,6 +1469,22 @@ const styles = StyleSheet.create({
     backgroundColor: "#f4f6f8",
     color: "#4b5563",
   },
+  selectorButton: {
+    borderWidth: 1,
+    borderColor: "#ccc",
+    borderRadius: 8,
+    padding: 12,
+    marginBottom: 12,
+    backgroundColor: "#fff",
+  },
+  selectorText: {
+    color: "#111827",
+    fontSize: 14,
+  },
+  selectorPlaceholder: {
+    color: "#6b7280",
+    fontSize: 14,
+  },
   toggle: {
     borderWidth: 1,
     borderColor: "#007aff",
@@ -1206,6 +1527,35 @@ const styles = StyleSheet.create({
     backgroundColor: "#fff",
     borderRadius: 12,
     padding: 14,
+  },
+  contractPickerCard: {
+    backgroundColor: "#fff",
+    borderRadius: 12,
+    padding: 14,
+    maxHeight: "70%",
+  },
+  contractPickerList: {
+    marginTop: 6,
+    marginBottom: 10,
+  },
+  contractPickerOption: {
+    borderWidth: 1,
+    borderColor: "#d7d7d7",
+    borderRadius: 8,
+    paddingVertical: 10,
+    paddingHorizontal: 12,
+    marginBottom: 8,
+  },
+  contractPickerOptionSelected: {
+    borderColor: "#007aff",
+    backgroundColor: "#eef4ff",
+  },
+  contractPickerOptionText: {
+    color: "#111827",
+    fontWeight: "600",
+  },
+  contractPickerOptionTextSelected: {
+    color: "#1e4b88",
   },
   modalTitle: {
     fontSize: 14,
@@ -1333,3 +1683,5 @@ const styles = StyleSheet.create({
     fontSize: 12,
   },
 });
+
+

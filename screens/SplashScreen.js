@@ -1,5 +1,5 @@
 import React, { useEffect } from "react";
-import { View, Text, StyleSheet, ActivityIndicator } from "react-native";
+import { View, Text, StyleSheet, ActivityIndicator, Image } from "react-native";
 
 export default function SplashScreen({ navigation }) {
   useEffect(() => {
@@ -12,8 +12,9 @@ export default function SplashScreen({ navigation }) {
 
   return (
     <View style={styles.container}>
+      <Image source={require("../assets/contracting-app.png")} style={styles.logo} resizeMode="contain" />
       <ActivityIndicator size="large" color="#007aff" />
-      <Text style={styles.brand}>Contracts Portal</Text>
+      <Text style={styles.brand}>Contracting App</Text>
     </View>
   );
 }
@@ -24,6 +25,11 @@ const styles = StyleSheet.create({
     justifyContent: "center",
     alignItems: "center",
     backgroundColor: "#fff",
+  },
+  logo: {
+    width: 146,
+    height: 146,
+    marginBottom: 14,
   },
   brand: {
     marginTop: 16,

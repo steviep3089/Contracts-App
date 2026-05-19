@@ -10,7 +10,7 @@ function isEdgeTransportError(error) {
   );
 }
 
-export async function syncChecklistSubmission({ checklistPayload, defectsPayload }) {
+export async function syncChecklistSubmission({ checklistPayload, defectsPayload, formCode = "roller_daily" }) {
   if (!checklistPayload) {
     throw new Error("Missing checklist payload");
   }
@@ -31,17 +31,18 @@ export async function syncChecklistSubmission({ checklistPayload, defectsPayload
 
   let sentDefectCount = 0;
   let photoFallbackUsed = false;
+  let routingWarning = "";
+
+  const {
+    data: { session },
+    error: sessionError,
+  } = await supabase.auth.getSession();
+
+  if (sessionError || !session?.access_token) {
+    throw new Error(sessionError?.message || "No active session token.");
+  }
 
   if (Array.isArray(defectsPayload) && defectsPayload.length > 0) {
-    const {
-      data: { session },
-      error: sessionError,
-    } = await supabase.auth.getSession();
-
-    if (sessionError || !session?.access_token) {
-      throw new Error(sessionError?.message || "No active session token.");
-    }
-
     let invokeResult = await supabase.functions.invoke("raise-maintenance-defects", {
       body: { defects: defectsPayload },
       headers: {
@@ -78,14 +79,37 @@ export async function syncChecklistSubmission({ checklistPayload, defectsPayload
     sentDefectCount = Number(invokeResult.data?.createdCount || 0);
   }
 
-  const { error: saveError } = await supabase.from("roller_daily_checks").insert(payload);
+  const { data: savedRow, error: saveError } = await supabase
+    .from("roller_daily_checks")
+    .insert(payload)
+    .select()
+    .single();
 
   if (saveError) {
     throw new Error(saveError.message || "Checklist save failed");
   }
 
+  const { data: routingData, error: routingError } = await supabase.functions.invoke(
+    "route-daily-checksheet",
+    {
+      body: {
+        source: "app",
+        formCode,
+        submission: savedRow,
+      },
+      headers: {
+        Authorization: `Bearer ${session.access_token}`,
+      },
+    }
+  );
+
+  if (routingError || routingData?.success === false) {
+    routingWarning = routingError?.message || routingData?.error || "Could not route checksheet to destinations.";
+  }
+
   return {
     sentDefectCount,
     photoFallbackUsed,
+    routingWarning,
   };
 }

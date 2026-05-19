@@ -13,6 +13,10 @@ import ContractFormsScreen from "./screens/ContractFormsScreen";
 import FillFormScreen from "./screens/FillFormScreen";
 import OutboxScreen from "./screens/OutboxScreen";
 import SelfCertApprovalsScreen from "./screens/SelfCertApprovalsScreen";
+import MyDocumentsScreen from "./screens/MyDocumentsScreen";
+import TimesheetScreen from "./screens/TimesheetScreen";
+import TimesheetApprovalsScreen from "./screens/TimesheetApprovalsScreen";
+import ApprovalsScreen from "./screens/ApprovalsScreen";
 
 const Stack = createNativeStackNavigator();
 
@@ -92,7 +96,7 @@ export default function App() {
           component={ResetPasswordScreen}
           options={{ title: "Reset Password" }}
         />
-        <Stack.Screen name="Home" component={HomeScreen} options={{ title: "Contracts App" }} />
+        <Stack.Screen name="Home" component={HomeScreen} options={{ title: "Contracting App" }} />
         <Stack.Screen
           name="ContractForms"
           component={ContractFormsScreen}
@@ -101,9 +105,29 @@ export default function App() {
         <Stack.Screen name="FillForm" component={FillFormScreen} options={{ title: "Fill Form" }} />
         <Stack.Screen name="Outbox" component={OutboxScreen} options={{ title: "Outbox" }} />
         <Stack.Screen
+          name="MyDocuments"
+          component={MyDocumentsScreen}
+          options={{ title: "My Documents" }}
+        />
+        <Stack.Screen
+          name="Approvals"
+          component={ApprovalsScreen}
+          options={{ title: "Approvals" }}
+        />
+        <Stack.Screen
           name="SelfCertApprovals"
           component={SelfCertApprovalsScreen}
           options={{ title: "Self Cert Approvals" }}
+        />
+        <Stack.Screen
+          name="TimesheetApprovals"
+          component={TimesheetApprovalsScreen}
+          options={{ title: "Timesheet Approvals" }}
+        />
+        <Stack.Screen
+          name="Timesheet"
+          component={TimesheetScreen}
+          options={{ title: "Timesheet" }}
         />
       </Stack.Navigator>
     </NavigationContainer>

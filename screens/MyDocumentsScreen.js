@@ -3,6 +3,14 @@ import { View, Text, StyleSheet, TouchableOpacity, FlatList, RefreshControl } fr
 import { useIsFocused } from "@react-navigation/native";
 import { supabase } from "../supabase";
 
+const DOCUMENTS_CACHE_TTL_MS = 60 * 1000;
+const MAX_SELF_CERT_ROWS = 120;
+const MAX_PLANT_CHECK_ROWS = 200;
+const MAX_TIMESHEET_ROWS = 200;
+const MAX_TIMESHEET_FALLBACK_ROWS = 80;
+
+const documentsCacheByUser = new Map();
+
 function formatDate(value) {
   if (!value) return "-";
   const d = new Date(value);
@@ -23,7 +31,8 @@ export default function MyDocumentsScreen() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
 
-  const loadDocuments = useCallback(async () => {
+  const loadDocuments = useCallback(async (options = {}) => {
+    const force = options.force === true;
     setLoading(true);
     setError("");
 
@@ -38,30 +47,62 @@ export default function MyDocumentsScreen() {
         return;
       }
 
-      const [selfCertRes, checksRes] = await Promise.all([
+      const cached = documentsCacheByUser.get(user.id);
+      if (!force && cached && Date.now() - cached.cachedAt < DOCUMENTS_CACHE_TTL_MS) {
+        setDocuments(cached.documents);
+        setLoading(false);
+        return;
+      }
+
+      const profilePromise = supabase
+        .from("user_profiles")
+        .select("full_name, employee_number")
+        .eq("user_id", user.id)
+        .maybeSingle();
+
+      const [profileRes, selfCertRes, checksRes, timesheetRes] = await Promise.all([
+        profilePromise,
         supabase
           .from("self_cert_forms")
           .select(
             "id, created_at, status, employee_name, department, employee_number, first_day_absence, working_days_lost, notification_made_to, reason_and_symptoms, injury_occurred, injury_details, sought_medical_advice, consulted_doctor_again, visited_hospital_or_clinic, employee_signed_at, manager_signed_at"
           )
           .eq("user_id", user.id)
-          .order("created_at", { ascending: false }),
+          .order("created_at", { ascending: false })
+          .limit(MAX_SELF_CERT_ROWS),
         supabase
           .from("roller_daily_checks")
           .select(
             "id, created_at, check_date, machine_type, machine_reg, asset_no, serial_no, machine_hours, location, contract_name, completed_by_name, has_defects"
           )
           .eq("created_by", user.id)
-          .order("created_at", { ascending: false }),
+          .order("created_at", { ascending: false })
+          .limit(MAX_PLANT_CHECK_ROWS),
+        supabase
+          .from("timesheet_forms")
+          .select(
+            "id, created_at, status, user_id, line_manager_user_id, employee_name, department, employee_number, week_commencing, entries, notes, employee_signed_at, manager_signed_at"
+          )
+          .or(`user_id.eq.${user.id},line_manager_user_id.eq.${user.id}`)
+          .order("created_at", { ascending: false })
+          .limit(MAX_TIMESHEET_ROWS),
       ]);
 
-      if (selfCertRes.error) {
+      if (selfCertRes.error && !/42P01|does not exist/i.test(String(selfCertRes.error.message || ""))) {
         throw new Error(selfCertRes.error.message || "Could not load self cert forms.");
       }
 
       if (checksRes.error) {
         throw new Error(checksRes.error.message || "Could not load Plant Daily Checklists records.");
       }
+
+      if (timesheetRes.error && !/42P01|does not exist/i.test(String(timesheetRes.error.message || ""))) {
+        throw new Error(timesheetRes.error.message || "Could not load timesheet forms.");
+      }
+
+      const profile = profileRes?.data || null;
+      const employeeNumber = String(profile?.employee_number || "").trim();
+      const profileName = String(profile?.full_name || "").trim();
 
       const selfCertDocs = (selfCertRes.data || []).map((row) => ({
         id: `self-cert-${row.id}`,
@@ -81,13 +122,59 @@ export default function MyDocumentsScreen() {
         raw: row,
       }));
 
-      const merged = [...selfCertDocs, ...plantDocs].sort((a, b) => {
+      const baseTimesheetRows = timesheetRes.data || [];
+      let fallbackTimesheetRows = [];
+
+      const shouldTryFallback = baseTimesheetRows.length < 40;
+
+      if (shouldTryFallback && employeeNumber) {
+        const { data: byEmployeeNoRows } = await supabase
+          .from("timesheet_forms")
+          .select(
+            "id, created_at, status, user_id, line_manager_user_id, employee_name, department, employee_number, week_commencing, entries, notes, employee_signed_at, manager_signed_at"
+          )
+          .eq("employee_number", employeeNumber)
+          .order("created_at", { ascending: false })
+          .limit(MAX_TIMESHEET_FALLBACK_ROWS);
+        fallbackTimesheetRows = [...fallbackTimesheetRows, ...(byEmployeeNoRows || [])];
+      }
+
+      if (shouldTryFallback && profileName) {
+        const { data: byNameRows } = await supabase
+          .from("timesheet_forms")
+          .select(
+            "id, created_at, status, user_id, line_manager_user_id, employee_name, department, employee_number, week_commencing, entries, notes, employee_signed_at, manager_signed_at"
+          )
+          .eq("employee_name", profileName)
+          .order("created_at", { ascending: false })
+          .limit(MAX_TIMESHEET_FALLBACK_ROWS);
+        fallbackTimesheetRows = [...fallbackTimesheetRows, ...(byNameRows || [])];
+      }
+
+      const mergedTimesheets = Array.from(
+        new Map([...baseTimesheetRows, ...fallbackTimesheetRows].map((row) => [row.id, row])).values()
+      );
+
+      const timesheetDocs = mergedTimesheets.map((row) => ({
+        id: `timesheet-${row.id}`,
+        createdAt: row.created_at,
+        type: "Timesheet",
+        title: row.employee_name || "Individual Timesheet",
+        status: row.status || "-",
+        raw: row,
+      }));
+
+      const merged = [...timesheetDocs, ...selfCertDocs, ...plantDocs].sort((a, b) => {
         const at = new Date(a.createdAt || 0).getTime();
         const bt = new Date(b.createdAt || 0).getTime();
         return bt - at;
       });
 
       setDocuments(merged);
+      documentsCacheByUser.set(user.id, {
+        documents: merged,
+        cachedAt: Date.now(),
+      });
     } catch (loadError) {
       setError(String(loadError?.message || "Could not load your documents."));
       setDocuments([]);
@@ -98,7 +185,7 @@ export default function MyDocumentsScreen() {
 
   useEffect(() => {
     if (isFocused) {
-      loadDocuments();
+      loadDocuments({ force: false });
     }
   }, [isFocused, loadDocuments]);
 
@@ -139,6 +226,22 @@ export default function MyDocumentsScreen() {
     );
   }
 
+  function renderTimesheetDetails(row) {
+    const entries = Array.isArray(row.entries) ? row.entries : [];
+    return (
+      <View style={styles.detailsWrap}>
+        <Text style={styles.detailRow}>Department: {row.department || "-"}</Text>
+        <Text style={styles.detailRow}>Employee No: {row.employee_number || "-"}</Text>
+        <Text style={styles.detailRow}>Week Ending: {row.week_commencing || "-"}</Text>
+        <Text style={styles.detailRow}>Rows: {entries.length}</Text>
+        <Text style={styles.detailRow}>Employee Signed At: {formatDate(row.employee_signed_at)}</Text>
+        <Text style={styles.detailRow}>Manager Signed At: {formatDate(row.manager_signed_at)}</Text>
+        <Text style={styles.detailLabel}>Notes</Text>
+        <Text style={styles.reasonText}>{row.notes || "-"}</Text>
+      </View>
+    );
+  }
+
   return (
     <View style={styles.container}>
       <Text style={styles.title}>My Documents</Text>
@@ -149,7 +252,7 @@ export default function MyDocumentsScreen() {
       <FlatList
         data={documents}
         keyExtractor={(item) => item.id}
-        refreshControl={<RefreshControl refreshing={loading} onRefresh={loadDocuments} />}
+        refreshControl={<RefreshControl refreshing={loading} onRefresh={() => loadDocuments({ force: true })} />}
         ListEmptyComponent={!loading ? <Text style={styles.empty}>No documents found.</Text> : null}
         renderItem={({ item }) => {
           const expanded = expandedId === item.id;
@@ -170,7 +273,9 @@ export default function MyDocumentsScreen() {
               {expanded
                 ? item.type === "Self Cert"
                   ? renderSelfCertDetails(item.raw)
-                  : renderPlantCheckDetails(item.raw)
+                  : item.type === "Timesheet"
+                    ? renderTimesheetDetails(item.raw)
+                    : renderPlantCheckDetails(item.raw)
                 : null}
             </View>
           );
