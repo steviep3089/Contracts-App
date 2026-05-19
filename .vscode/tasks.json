@@ -1,0 +1,19 @@
+{
+	"version": "2.0.0",
+	"tasks": [
+		{
+			"label": "EAS iOS production build",
+			"type": "shell",
+			"command": "npx",
+			"args": [
+				"eas",
+				"build",
+				"-p",
+				"ios",
+				"--profile",
+				"production"
+			],
+			"isBackground": true
+		}
+	]
+}
