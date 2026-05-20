@@ -146,15 +146,22 @@ export default function SelfCertApprovalsScreen() {
     return "-";
   }
 
-  function textValue(value) {
-    const text = String(value || "").trim();
-    return text || "-";
-  }
+function textValue(value) {
+  const text = String(value || "").trim();
+  return text || "-";
+}
 
-  function signatureLabel(value) {
-    const text = String(value || "").trim();
-    if (!text) return "-";
-    if (text.startsWith("data:image/")) return "Captured signature";
+function formatDateTimeValue(value) {
+  if (!value) return "-";
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime())) return textValue(value);
+  return parsed.toLocaleString("en-GB");
+}
+
+function signatureLabel(value) {
+  const text = String(value || "").trim();
+  if (!text) return "-";
+  if (text.startsWith("data:image/")) return "Captured signature";
     return text;
   }
 
@@ -253,7 +260,7 @@ export default function SelfCertApprovalsScreen() {
               </View>
               <View style={styles.readOnlyField}>
                 <Text style={styles.readOnlyLabel}>Employee Signed At</Text>
-                <Text style={styles.readOnlyValue}>{textValue(selected?.employee_signed_at)}</Text>
+                <Text style={styles.readOnlyValue}>{formatDateTimeValue(selected?.employee_signed_at)}</Text>
               </View>
 
               <Text style={styles.label}>Manager Signature</Text>

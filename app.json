@@ -16,7 +16,7 @@
     ],
     "ios": {
       "supportsTablet": true,
-      "bundleIdentifier": "com.sitebatch.contracts",
+      "bundleIdentifier": "com.sitebatch.contractingapp",
       "infoPlist": {
         "ITSAppUsesNonExemptEncryption": false
       }
@@ -26,7 +26,7 @@
         "foregroundImage": "./assets/contracting-app.png",
         "backgroundColor": "#ffffff"
       },
-      "package": "com.sitebatch.contracts"
+      "package": "com.sitebatch.contractingapp"
     },
     "web": {
       "favicon": "./assets/favicon.png"

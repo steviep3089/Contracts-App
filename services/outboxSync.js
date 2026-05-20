@@ -12,7 +12,20 @@ export function isTransportError(error) {
   );
 }
 
+async function requireActiveSession() {
+  const {
+    data: { session },
+  } = await supabase.auth.getSession();
+
+  if (!session?.access_token) {
+    throw new Error("No active session found. Please sign in again before submitting or approving forms.");
+  }
+
+  return session;
+}
+
 export async function syncNearMissSubmission({ payload }) {
+  await requireActiveSession();
   const { data, error } = await supabase.functions.invoke("report-near-miss", {
     body: payload,
   });
@@ -25,6 +38,7 @@ export async function syncNearMissSubmission({ payload }) {
 }
 
 export async function syncSelfCertSubmission({ payload }) {
+  await requireActiveSession();
   const { data, error } = await supabase.functions.invoke("submit-self-cert", {
     body: payload,
   });
@@ -37,6 +51,7 @@ export async function syncSelfCertSubmission({ payload }) {
 }
 
 export async function syncSelfCertApproval({ payload }) {
+  await requireActiveSession();
   const { data, error } = await supabase.functions.invoke("approve-self-cert", {
     body: payload,
   });
@@ -49,6 +64,7 @@ export async function syncSelfCertApproval({ payload }) {
 }
 
 export async function syncTimesheetApproval({ payload }) {
+  await requireActiveSession();
   const { data, error } = await supabase.functions.invoke("approve-timesheet", {
     body: payload,
   });
