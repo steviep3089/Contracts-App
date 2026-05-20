@@ -150,6 +150,7 @@ export default function LoginScreen({ navigation }) {
         </Animated.View>
 
         <Text style={styles.title}>Contracting App</Text>
+        <Text style={styles.subTitle}>Sign in with your invited account. New accounts are issued by admin.</Text>
 
         <TextInput
           placeholder="Email"
@@ -188,9 +189,6 @@ export default function LoginScreen({ navigation }) {
           <Text style={styles.buttonText}>Sign In</Text>
         </TouchableOpacity>
 
-        <TouchableOpacity style={styles.outlineButton} onPress={() => navigation.replace("SignUp")}>
-          <Text style={styles.outlineButtonText}>Create Account</Text>
-        </TouchableOpacity>
       </ScrollView>
     </KeyboardAvoidingView>
   );
@@ -209,6 +207,12 @@ const styles = StyleSheet.create({
   title: {
     fontSize: 28,
     fontWeight: "600",
+    textAlign: "center",
+    marginBottom: 10,
+  },
+  subTitle: {
+    fontSize: 14,
+    color: "#666",
     textAlign: "center",
     marginBottom: 25,
   },
@@ -275,19 +279,6 @@ const styles = StyleSheet.create({
     color: "white",
     textAlign: "center",
     fontSize: 18,
-    fontWeight: "600",
-  },
-  outlineButton: {
-    borderColor: "#007aff",
-    borderWidth: 1,
-    padding: 14,
-    borderRadius: 8,
-    marginTop: 10,
-  },
-  outlineButtonText: {
-    textAlign: "center",
-    color: "#007aff",
-    fontSize: 16,
     fontWeight: "600",
   },
 });

@@ -6,7 +6,6 @@ import { supabase } from "./supabase";
 
 import SplashScreen from "./screens/SplashScreen";
 import LoginScreen from "./screens/LoginScreen";
-import SignUpScreen from "./screens/SignUpScreen";
 import ResetPasswordScreen from "./screens/ResetPasswordScreen";
 import HomeScreen from "./screens/HomeScreen";
 import ContractFormsScreen from "./screens/ContractFormsScreen";
@@ -87,13 +86,12 @@ export default function App() {
 
   return (
     <NavigationContainer ref={navigationRef} linking={linking}>
-      <Stack.Navigator initialRouteName="Splash" screenOptions={{ headerTitleAlign: "center" }}>
-        <Stack.Screen name="Splash" component={SplashScreen} options={{ headerShown: false }} />
-        <Stack.Screen name="Login" component={LoginScreen} options={{ title: "Login" }} />
-        <Stack.Screen name="SignUp" component={SignUpScreen} options={{ title: "Sign Up" }} />
-        <Stack.Screen
-          name="ResetPassword"
-          component={ResetPasswordScreen}
+        <Stack.Navigator initialRouteName="Splash" screenOptions={{ headerTitleAlign: "center" }}>
+          <Stack.Screen name="Splash" component={SplashScreen} options={{ headerShown: false }} />
+          <Stack.Screen name="Login" component={LoginScreen} options={{ title: "Login" }} />
+          <Stack.Screen
+            name="ResetPassword"
+            component={ResetPasswordScreen}
           options={{ title: "Reset Password" }}
         />
         <Stack.Screen name="Home" component={HomeScreen} options={{ title: "Contracting App" }} />
