@@ -8,6 +8,7 @@ import {
   Alert,
   ActivityIndicator,
 } from "react-native";
+import AsyncStorage from "@react-native-async-storage/async-storage";
 import { supabase } from "../supabase";
 
 export default function ResetPasswordScreen({ navigation }) {
@@ -50,12 +51,13 @@ export default function ResetPasswordScreen({ navigation }) {
 
     const { error } = await supabase.auth.updateUser({
       password,
-      data: { password_set: true, invited: false },
+      data: { password_set: true, invited: false, force_password_change: false },
     });
 
     if (error) {
       Alert.alert("Error", error.message);
     } else {
+      await AsyncStorage.removeItem("savedPassword");
       Alert.alert("Success", "Password updated successfully", [
         {
           text: "OK",

@@ -33,6 +33,17 @@ export default function App() {
   const navigationRef = useRef();
 
   useEffect(() => {
+    const needsPasswordSetup = (user) =>
+      !!(
+        user &&
+        (
+          user.recovery_sent_at ||
+          (user.invited_at && user.user_metadata?.password_set !== true) ||
+          user.user_metadata?.force_password_change === true ||
+          user.user_metadata?.password_set === false
+        )
+      );
+
     const isInviteOrSignup = (url) =>
       url?.includes("type=invite") ||
       url?.includes("type=signup") ||
@@ -64,9 +75,7 @@ export default function App() {
 
       if (event === "SIGNED_IN" && session?.user?.invited_at) {
         supabase.auth.getUser().then(({ data: userData }) => {
-          const needsReset =
-            userData?.user?.user_metadata?.password_set !== true &&
-            userData?.user?.invited_at;
+          const needsReset = needsPasswordSetup(userData?.user || session?.user);
           if (!needsReset) {
             return;
           }

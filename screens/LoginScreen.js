@@ -36,6 +36,17 @@ export default function LoginScreen({ navigation }) {
   }, []);
 
   async function checkForRecovery() {
+    const needsPasswordSetup = (user) =>
+      !!(
+        user &&
+        (
+          user.recovery_sent_at ||
+          (user.invited_at && user.user_metadata?.password_set !== true) ||
+          user.user_metadata?.force_password_change === true ||
+          user.user_metadata?.password_set === false
+        )
+      );
+
     const {
       data: { session },
     } = await supabase.auth.getSession();
@@ -43,10 +54,7 @@ export default function LoginScreen({ navigation }) {
 
     if (session?.user) {
       const currentUser = userData?.user || session.user;
-      const isRecovery =
-        currentUser.aud === "authenticated" &&
-        (currentUser.recovery_sent_at ||
-          (currentUser.invited_at && currentUser.user_metadata?.password_set !== true));
+      const isRecovery = currentUser.aud === "authenticated" && needsPasswordSetup(currentUser);
 
       if (isRecovery) {
         navigation.replace("ResetPassword");
@@ -60,9 +68,9 @@ export default function LoginScreen({ navigation }) {
         return;
       }
 
-      if (event === "SIGNED_IN" && newSession?.user?.invited_at) {
+      if (event === "SIGNED_IN") {
         supabase.auth.getUser().then(({ data: currentData }) => {
-          if (currentData?.user?.user_metadata?.password_set !== true) {
+          if (needsPasswordSetup(currentData?.user || newSession?.user)) {
             navigation.replace("ResetPassword");
           }
         });
@@ -105,7 +113,17 @@ export default function LoginScreen({ navigation }) {
       alert(error.message);
     } else {
       await rememberLogin();
-      navigation.replace("Home");
+      const { data: userData } = await supabase.auth.getUser();
+      const signedInUser = userData?.user;
+      const needsReset =
+        signedInUser &&
+        (
+          signedInUser.recovery_sent_at ||
+          (signedInUser.invited_at && signedInUser.user_metadata?.password_set !== true) ||
+          signedInUser.user_metadata?.force_password_change === true ||
+          signedInUser.user_metadata?.password_set === false
+        );
+      navigation.replace(needsReset ? "ResetPassword" : "Home");
     }
   }
 
