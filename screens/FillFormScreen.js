@@ -6,6 +6,7 @@ import * as ImagePicker from "expo-image-picker";
 import { supabase } from "../supabase";
 import { enqueueOutboxItem } from "../services/outboxQueue";
 import { syncChecklistSubmission } from "../services/checklistSync";
+import BatchingWeeklyInspectionScreen, { isBatchingWeeklyInspectionForm } from "./BatchingWeeklyInspectionScreen";
 
 const STATUS_OPTIONS = ["X", "Y", "N/A"];
 const DEFECT_PHOTO_MAX_FILES = 5;
@@ -246,6 +247,9 @@ function isTransportError(error) {
 
 export default function FillFormScreen({ route, navigation }) {
   const form = route?.params?.form;
+  if (isBatchingWeeklyInspectionForm(form)) {
+    return <BatchingWeeklyInspectionScreen route={route} navigation={navigation} />;
+  }
   const launch = form?.launch || null;
   const contractLocked = form?.contractLocked !== false;
   const contractOptions = useMemo(() => {
@@ -331,6 +335,7 @@ export default function FillFormScreen({ route, navigation }) {
   const [defectRows, setDefectRows] = useState([]);
   const [defectSubmitting, setDefectSubmitting] = useState(false);
   const [saving, setSaving] = useState(false);
+  const [draftRecordId, setDraftRecordId] = useState("");
 
   const selectedContractNumber = String(selectedContractChoice?.contractNo || form?.contractNo || "").trim();
   const selectedContractName = String(
@@ -387,18 +392,18 @@ export default function FillFormScreen({ route, navigation }) {
   useEffect(() => {
     if (!isFocused) return;
 
-    // Ensure each checklist starts from contract context and today's date.
-    setDate(buildTodayIsoDate());
-    setLocation(defaultContractLocation);
     initializeUserDefaults();
     fetchAssetDirectory();
 
     if (launch?.token && launch.token !== lastLaunchTokenRef.current) {
       lastLaunchTokenRef.current = launch.token;
 
-      if (launch.mode === "copy" && launch.data) {
+      if ((launch.mode === "copy" || launch.mode === "draft") && launch.data) {
         const source = launch.data;
         setVersion(String(source.sheet_version || "1"));
+        setCompletedBy(String(source.completed_by_name || ""));
+        setJobTitle(String(source.job_title || ""));
+        setDate(String(launch.mode === "copy" ? buildTodayIsoDate() : source.check_date || buildTodayIsoDate()));
         setMachineReg(String(source.machine_reg || ""));
         setAssetTag(String(source.asset_no || ""));
         setSerialNo(String(source.serial_no || ""));
@@ -406,9 +411,15 @@ export default function FillFormScreen({ route, navigation }) {
         setMachineType(String(source.machine_type || defaultMachineType));
         setChecklist(buildChecklistState(checklistItems, source.checklist || {}));
         setNotes(String(source.notes || ""));
-        Alert.alert("Copied", "Copied from latest completed checklist for this contract. Date set to today.");
+        setDraftRecordId(launch.mode === "draft" ? String(launch.recordId || source.id || "") : "");
+        if (launch.mode === "draft") {
+          Alert.alert("Draft Loaded", "Draft restored for continued editing.");
+        } else {
+          Alert.alert("Copied", "Copied from latest completed checklist for this contract. Date set to today.");
+        }
       } else {
         setVersion("1");
+        setDate(buildTodayIsoDate());
         setMachineReg("");
         setAssetTag("");
         setSerialNo("");
@@ -416,7 +427,11 @@ export default function FillFormScreen({ route, navigation }) {
         setMachineType(defaultMachineType);
         setChecklist(buildInitialChecklist(checklistItems));
         setNotes("");
+        setDraftRecordId("");
       }
+    } else if (!launch?.token) {
+      setDate(buildTodayIsoDate());
+      setLocation(defaultContractLocation);
     }
   }, [isFocused, form?.id, defaultContractLocation, defaultMachineType, launch]);
 
@@ -747,6 +762,7 @@ export default function FillFormScreen({ route, navigation }) {
     const contractName = selectedContractName || location.trim() || defaultContractLocation;
     const contractNumber = selectedContractNumber || contractName;
     return {
+      id: draftRecordId || null,
       created_by: userId || null,
       sheet_version: version,
       completed_by_name: completedBy.trim(),
@@ -760,6 +776,7 @@ export default function FillFormScreen({ route, navigation }) {
       template_code: String(form?.templateCode || form?.id || "").trim() || null,
       template_title: String(form?.title || "").trim() || null,
       location: contractName,
+      contract_id: selectedContractChoice?.id || form?.contractId || null,
       contract_name: contractName,
       contract_number: contractNumber,
       checklist,
@@ -830,6 +847,48 @@ export default function FillFormScreen({ route, navigation }) {
     );
   }
 
+  async function saveDraft() {
+    if (!contractLocked && !selectedContractChoice) {
+      Alert.alert("Missing Contract", "Please select an active contract before saving this draft.");
+      return;
+    }
+
+    try {
+      setSaving(true);
+      const netState = await NetInfo.fetch();
+      const isOnline = Boolean(netState.isConnected && netState.isInternetReachable);
+
+      if (!isOnline) {
+        Alert.alert(
+          "Internet Required",
+          "Save Draft stores the form against the contract folder, so it needs an internet connection."
+        );
+        return;
+      }
+
+      const userId = await getCurrentUserId();
+      if (!userId) return;
+
+      const result = await syncChecklistSubmission({
+        checklistPayload: {
+          ...buildChecklistPayload(userId),
+          status: "draft",
+        },
+        defectsPayload: [],
+        formCode: form?.templateCode || form?.id || "roller_daily",
+      });
+
+      setDraftRecordId(String(result?.savedRow?.id || draftRecordId || ""));
+      Alert.alert("Draft Saved", "Draft saved to the contract folder.", [
+        { text: "OK", onPress: () => navigation.goBack() },
+      ]);
+    } catch (err) {
+      Alert.alert("Draft Save Failed", err?.message || "Unknown error while saving draft.");
+    } finally {
+      setSaving(false);
+    }
+  }
+
   async function handleConfirmDefectsAndSubmit() {
     const selected = defectRows.filter((row) => row.should_send);
 
@@ -871,7 +930,10 @@ export default function FillFormScreen({ route, navigation }) {
       }
 
       const result = await syncChecklistSubmission({
-        checklistPayload,
+        checklistPayload: {
+          ...checklistPayload,
+          status: "submitted",
+        },
         defectsPayload,
         formCode: form?.templateCode || form?.id || "roller_daily",
       });
@@ -893,7 +955,10 @@ export default function FillFormScreen({ route, navigation }) {
       const userId = await getCurrentUserId();
       if (userId && isTransportError(error)) {
         await enqueueSubmission({
-          checklistPayload: buildChecklistPayload(userId),
+          checklistPayload: {
+            ...buildChecklistPayload(userId),
+            status: "submitted",
+          },
           defectsPayload: buildDefectPayload(selected),
           formCode: form?.templateCode || form?.id || "roller_daily",
           reason:
@@ -986,7 +1051,10 @@ export default function FillFormScreen({ route, navigation }) {
 
       if (!isOnline) {
         await enqueueSubmission({
-          checklistPayload,
+          checklistPayload: {
+            ...checklistPayload,
+            status: "submitted",
+          },
           defectsPayload,
           formCode: form?.templateCode || form?.id || "roller_daily",
           reason: "No internet connection. Submission queued in Outbox and will sync when online.",
@@ -1000,7 +1068,10 @@ export default function FillFormScreen({ route, navigation }) {
       }
 
       const result = await syncChecklistSubmission({
-        checklistPayload,
+        checklistPayload: {
+          ...checklistPayload,
+          status: "submitted",
+        },
         defectsPayload,
         formCode: form?.templateCode || form?.id || "roller_daily",
       });
@@ -1012,7 +1083,10 @@ export default function FillFormScreen({ route, navigation }) {
       const userId = await getCurrentUserId();
       if (userId && isTransportError(err)) {
         await enqueueSubmission({
-          checklistPayload: buildChecklistPayload(userId),
+          checklistPayload: {
+            ...buildChecklistPayload(userId),
+            status: "submitted",
+          },
           defectsPayload: [],
           formCode: form?.templateCode || form?.id || "roller_daily",
           reason:
@@ -1163,9 +1237,21 @@ export default function FillFormScreen({ route, navigation }) {
         </Text>
       </View>
 
-      <TouchableOpacity style={[styles.button, saving && styles.buttonDisabled]} onPress={submitForm} disabled={saving}>
-        <Text style={styles.buttonText}>{saving ? "Saving..." : "Submit Form"}</Text>
-      </TouchableOpacity>
+      <View style={styles.bottomActionRow}>
+        <TouchableOpacity
+          style={[styles.button, styles.secondaryButton, saving && styles.buttonDisabled]}
+          onPress={saveDraft}
+          disabled={saving}
+        >
+          <Text style={[styles.buttonText, styles.secondaryButtonText]}>
+            {saving ? "Saving..." : "Save Draft"}
+          </Text>
+        </TouchableOpacity>
+
+        <TouchableOpacity style={[styles.button, saving && styles.buttonDisabled]} onPress={submitForm} disabled={saving}>
+          <Text style={styles.buttonText}>{saving ? "Saving..." : "Submit Form"}</Text>
+        </TouchableOpacity>
+      </View>
 
       <Modal visible={defectPromptVisible} transparent animationType="fade" onRequestClose={closeDefectPrompt}>
         <View style={styles.modalBackdrop}>
@@ -1507,6 +1593,14 @@ const styles = StyleSheet.create({
     backgroundColor: "#007aff",
     borderRadius: 8,
     padding: 14,
+    flex: 1,
+  },
+  bottomActionRow: {
+    flexDirection: "row",
+    gap: 10,
+  },
+  secondaryButton: {
+    backgroundColor: "#e2e8f0",
   },
   buttonDisabled: {
     opacity: 0.7,
@@ -1516,6 +1610,9 @@ const styles = StyleSheet.create({
     textAlign: "center",
     fontSize: 16,
     fontWeight: "600",
+  },
+  secondaryButtonText: {
+    color: "#0f172a",
   },
   modalBackdrop: {
     flex: 1,

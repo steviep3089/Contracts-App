@@ -248,6 +248,9 @@ export default function ContractFormsScreen({ navigation, route }) {
   const [contracts, setContracts] = useState([]);
   const [selectedContract, setSelectedContract] = useState(null);
   const [forms, setForms] = useState([]);
+  const [draftForms, setDraftForms] = useState([]);
+  const [completedForms, setCompletedForms] = useState([]);
+  const [activeTab, setActiveTab] = useState("templates");
   const [refreshing, setRefreshing] = useState(false);
   const [message, setMessage] = useState("");
   const [copyingFormId, setCopyingFormId] = useState("");
@@ -301,6 +304,8 @@ export default function ContractFormsScreen({ navigation, route }) {
     setMessage("");
 
     try {
+      await fetchContractActivity(contract, { showSpinner: false });
+
       const { data, error } = await supabase
         .from("contract_required_forms")
         .select("id, form_template_id, is_active, form_templates(template_code, title, description, checklist)")
@@ -391,6 +396,48 @@ export default function ContractFormsScreen({ navigation, route }) {
     }
   }
 
+  async function fetchContractActivity(contract, options = {}) {
+    const showSpinner = options.showSpinner !== false;
+    if (showSpinner) setRefreshing(true);
+
+    try {
+      const { data, error } = await supabase
+        .from("roller_daily_checks")
+        .select(
+          "id, created_at, updated_at, submitted_at, status, template_code, template_title, check_date, machine_reg, contract_id, contract_name, contract_number, completed_by_name, has_defects, sheet_version, job_title, asset_no, serial_no, machine_hours, machine_type, location, checklist, notes"
+        )
+        .eq("contract_id", contract.id)
+        .order("updated_at", { ascending: false });
+
+      if (error) {
+        setDraftForms([]);
+        setCompletedForms([]);
+        setMessage(error.message || "Could not load saved forms for this contract.");
+        return;
+      }
+
+      const mapped = (data || []).map((row) => ({
+        id: String(row.id),
+        title: String(row.template_title || row.template_code || row.machine_reg || "Checklist").trim(),
+        templateCode: String(row.template_code || "").trim(),
+        templateTitle: String(row.template_title || "").trim(),
+        status: String(row.status || "submitted").trim().toLowerCase(),
+        updatedAt: row.updated_at || row.created_at || "",
+        submittedAt: row.submitted_at || row.created_at || "",
+        checkDate: row.check_date || "",
+        machineReg: row.machine_reg || "",
+        completedByName: row.completed_by_name || "",
+        hasDefects: Boolean(row.has_defects),
+        raw: row,
+      }));
+
+      setDraftForms(mapped.filter((row) => row.status === "draft"));
+      setCompletedForms(mapped.filter((row) => row.status !== "draft"));
+    } finally {
+      if (showSpinner) setRefreshing(false);
+    }
+  }
+
   async function fetchPlantAssignedForms(options = {}) {
     const showSpinner = options.showSpinner !== false;
     const force = options.force === true;
@@ -426,6 +473,12 @@ export default function ContractFormsScreen({ navigation, route }) {
         ? mappedContracts.find((row) => row.id === selectedContract.id) || mappedContracts[0]
         : mappedContracts[0];
       setSelectedContract(defaultContract || null);
+      if (defaultContract?.id) {
+        await fetchContractActivity(defaultContract, { showSpinner: false });
+      } else {
+        setDraftForms([]);
+        setCompletedForms([]);
+      }
 
       const library = await loadChecklistTemplateLibrary({ force });
       if (library.error) {
@@ -469,6 +522,7 @@ export default function ContractFormsScreen({ navigation, route }) {
 
   function openContract(contract) {
     setSelectedContract(contract);
+    setActiveTab("templates");
     fetchAssignedForms(contract, { showSpinner: true });
   }
 
@@ -480,6 +534,8 @@ export default function ContractFormsScreen({ navigation, route }) {
 
     setSelectedContract(null);
     setForms([]);
+    setDraftForms([]);
+    setCompletedForms([]);
     setMessage("");
   }
 
@@ -516,6 +572,15 @@ export default function ContractFormsScreen({ navigation, route }) {
     };
   }
 
+  function buildSavedRecordLaunch(mode, row) {
+    return {
+      mode,
+      token: Date.now(),
+      recordId: row.id,
+      data: row.raw,
+    };
+  }
+
   function handleStartNew(item) {
     navigation.navigate("FillForm", {
       form: buildFillFormPayload(item, {
@@ -534,9 +599,10 @@ export default function ContractFormsScreen({ navigation, route }) {
       const { data, error } = await supabase
         .from("roller_daily_checks")
         .select(
-          "id, created_at, sheet_version, machine_type, machine_reg, asset_no, serial_no, machine_hours, checklist, notes"
+          "id, created_at, sheet_version, completed_by_name, job_title, check_date, machine_type, machine_reg, asset_no, serial_no, machine_hours, checklist, notes"
         )
         .eq("contract_id", contractId)
+        .neq("status", "draft")
         .order("created_at", { ascending: false })
         .limit(1)
         .maybeSingle();
@@ -562,6 +628,9 @@ export default function ContractFormsScreen({ navigation, route }) {
           copiedFromId: data.id,
           data: {
             sheet_version: data.sheet_version,
+            completed_by_name: data.completed_by_name,
+            job_title: data.job_title,
+            check_date: data.check_date,
             machine_type: data.machine_type,
             machine_reg: data.machine_reg,
             asset_no: data.asset_no,
@@ -575,6 +644,56 @@ export default function ContractFormsScreen({ navigation, route }) {
     } finally {
       setCopyingFormId("");
     }
+  }
+
+  function handleResumeDraft(row) {
+    const item = {
+      id: row.templateCode || row.id,
+      templateCode: row.templateCode,
+      title: row.templateTitle || row.title,
+      contractId: selectedContract?.id || row.raw?.contract_id || null,
+      contractNo: selectedContract?.contractNo || row.raw?.contract_number || "",
+      contractName: selectedContract?.contractName || row.raw?.contract_name || "",
+      contractLocked: true,
+      contractOptions: selectedContract
+        ? [
+            {
+              id: selectedContract.id,
+              contractNo: selectedContract.contractNo || "-",
+              contractName: selectedContract.contractName || "Contract",
+            },
+          ]
+        : [],
+    };
+
+    navigation.navigate("FillForm", {
+      form: buildFillFormPayload(item, buildSavedRecordLaunch("draft", row)),
+    });
+  }
+
+  function handleCopyCompleted(row) {
+    const item = {
+      id: row.templateCode || row.id,
+      templateCode: row.templateCode,
+      title: row.templateTitle || row.title,
+      contractId: selectedContract?.id || row.raw?.contract_id || null,
+      contractNo: selectedContract?.contractNo || row.raw?.contract_number || "",
+      contractName: selectedContract?.contractName || row.raw?.contract_name || "",
+      contractLocked: true,
+      contractOptions: selectedContract
+        ? [
+            {
+              id: selectedContract.id,
+              contractNo: selectedContract.contractNo || "-",
+              contractName: selectedContract.contractName || "Contract",
+            },
+          ]
+        : [],
+    };
+
+    navigation.navigate("FillForm", {
+      form: buildFillFormPayload(item, buildSavedRecordLaunch("copy", row)),
+    });
   }
 
   return (
@@ -622,33 +741,104 @@ export default function ContractFormsScreen({ navigation, route }) {
           <Text style={styles.title}>{entryPoint === "daily_plant_checks" ? "Plant Daily Checklists" : "Templates"}</Text>
           {message ? <Text style={styles.message}>{message}</Text> : null}
 
-          <FlatList
-            data={forms}
-            keyExtractor={(item) => item.id}
-            refreshing={refreshing}
-            onRefresh={onPullRefresh}
-            renderItem={({ item }) => (
-              <View style={styles.card}>
-                <Text style={styles.formTitle}>{item.title}</Text>
+          <View style={styles.tabRow}>
+            {[
+              { key: "templates", label: "Templates" },
+              { key: "in_progress", label: "In Progress" },
+              { key: "completed", label: "Completed Forms" },
+            ].map((tab) => {
+              const active = activeTab === tab.key;
+              return (
+                <TouchableOpacity
+                  key={tab.key}
+                  style={[styles.tabButton, active && styles.tabButtonActive]}
+                  onPress={() => setActiveTab(tab.key)}
+                >
+                  <Text style={[styles.tabButtonText, active && styles.tabButtonTextActive]}>{tab.label}</Text>
+                </TouchableOpacity>
+              );
+            })}
+          </View>
 
-                <View style={styles.formActionsRow}>
-                  <TouchableOpacity style={styles.actionButton} onPress={() => handleStartNew(item)}>
-                    <Text style={styles.actionButtonText}>New</Text>
-                  </TouchableOpacity>
+          {activeTab === "templates" ? (
+            <FlatList
+              data={forms}
+              keyExtractor={(item) => item.id}
+              refreshing={refreshing}
+              onRefresh={onPullRefresh}
+              renderItem={({ item }) => (
+                <View style={styles.card}>
+                  <Text style={styles.formTitle}>{item.title}</Text>
 
-                  <TouchableOpacity
-                    style={[styles.actionButton, styles.actionButtonSecondary]}
-                    onPress={() => handleStartCopy(item)}
-                    disabled={copyingFormId === item.id}
-                  >
-                    <Text style={[styles.actionButtonText, styles.actionButtonSecondaryText]}>
-                      {copyingFormId === item.id ? "Copying..." : "Copy"}
-                    </Text>
-                  </TouchableOpacity>
+                  <View style={styles.formActionsRow}>
+                    <TouchableOpacity style={styles.actionButton} onPress={() => handleStartNew(item)}>
+                      <Text style={styles.actionButtonText}>New</Text>
+                    </TouchableOpacity>
+
+                    <TouchableOpacity
+                      style={[styles.actionButton, styles.actionButtonSecondary]}
+                      onPress={() => handleStartCopy(item)}
+                      disabled={copyingFormId === item.id}
+                    >
+                      <Text style={[styles.actionButtonText, styles.actionButtonSecondaryText]}>
+                        {copyingFormId === item.id ? "Copying..." : "Copy"}
+                      </Text>
+                    </TouchableOpacity>
+                  </View>
                 </View>
-              </View>
-            )}
-          />
+              )}
+              ListEmptyComponent={!refreshing ? <Text style={styles.empty}>No templates assigned to this contract.</Text> : null}
+            />
+          ) : null}
+
+          {activeTab === "in_progress" ? (
+            <FlatList
+              data={draftForms}
+              keyExtractor={(item) => item.id}
+              refreshing={refreshing}
+              onRefresh={onPullRefresh}
+              renderItem={({ item }) => (
+                <View style={styles.card}>
+                  <Text style={styles.formTitle}>{item.title}</Text>
+                  <Text style={styles.formDetail}>
+                    Last saved: {item.updatedAt ? new Date(item.updatedAt).toLocaleString() : "-"}
+                  </Text>
+                  {item.machineReg ? <Text style={styles.formDetail}>Plant: {item.machineReg}</Text> : null}
+                  <View style={styles.formActionsRow}>
+                    <TouchableOpacity style={styles.actionButton} onPress={() => handleResumeDraft(item)}>
+                      <Text style={styles.actionButtonText}>Resume</Text>
+                    </TouchableOpacity>
+                  </View>
+                </View>
+              )}
+              ListEmptyComponent={!refreshing ? <Text style={styles.empty}>No drafts saved for this contract.</Text> : null}
+            />
+          ) : null}
+
+          {activeTab === "completed" ? (
+            <FlatList
+              data={completedForms}
+              keyExtractor={(item) => item.id}
+              refreshing={refreshing}
+              onRefresh={onPullRefresh}
+              renderItem={({ item }) => (
+                <View style={styles.card}>
+                  <Text style={styles.formTitle}>{item.title}</Text>
+                  <Text style={styles.formDetail}>
+                    Submitted: {item.submittedAt ? new Date(item.submittedAt).toLocaleString() : "-"}
+                  </Text>
+                  {item.checkDate ? <Text style={styles.formDetail}>Check date: {item.checkDate}</Text> : null}
+                  {item.hasDefects ? <Text style={styles.formDetail}>Defects flagged</Text> : null}
+                  <View style={styles.formActionsRow}>
+                    <TouchableOpacity style={styles.actionButton} onPress={() => handleCopyCompleted(item)}>
+                      <Text style={styles.actionButtonText}>Copy</Text>
+                    </TouchableOpacity>
+                  </View>
+                </View>
+              )}
+              ListEmptyComponent={!refreshing ? <Text style={styles.empty}>No completed forms saved for this contract.</Text> : null}
+            />
+          ) : null}
         </>
       )}
     </View>
@@ -693,6 +883,30 @@ const styles = StyleSheet.create({
   message: {
     color: "#475569",
     marginBottom: 10,
+  },
+  tabRow: {
+    flexDirection: "row",
+    gap: 8,
+    marginBottom: 12,
+  },
+  tabButton: {
+    paddingVertical: 10,
+    paddingHorizontal: 12,
+    borderWidth: 1,
+    borderColor: "#cbd5e1",
+    borderRadius: 10,
+    backgroundColor: "#fff",
+  },
+  tabButtonActive: {
+    backgroundColor: "#1d4ed8",
+    borderColor: "#1d4ed8",
+  },
+  tabButtonText: {
+    color: "#334155",
+    fontWeight: "600",
+  },
+  tabButtonTextActive: {
+    color: "#fff",
   },
   empty: {
     color: "#6b7280",

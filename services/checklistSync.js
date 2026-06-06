@@ -32,6 +32,10 @@ export async function syncChecklistSubmission({ checklistPayload, defectsPayload
   let sentDefectCount = 0;
   let photoFallbackUsed = false;
   let routingWarning = "";
+  const submissionStatus = String(checklistPayload?.status || "submitted").trim().toLowerCase() === "draft"
+    ? "draft"
+    : "submitted";
+  const existingId = String(checklistPayload?.id || "").trim();
 
   const {
     data: { session },
@@ -42,7 +46,7 @@ export async function syncChecklistSubmission({ checklistPayload, defectsPayload
     throw new Error(sessionError?.message || "No active session token.");
   }
 
-  if (Array.isArray(defectsPayload) && defectsPayload.length > 0) {
+  if (submissionStatus === "submitted" && Array.isArray(defectsPayload) && defectsPayload.length > 0) {
     let invokeResult = await supabase.functions.invoke("raise-maintenance-defects", {
       body: { defects: defectsPayload },
       headers: {
@@ -79,19 +83,38 @@ export async function syncChecklistSubmission({ checklistPayload, defectsPayload
     sentDefectCount = Number(invokeResult.data?.createdCount || 0);
   }
 
-  const { data: savedRow, error: saveError } = await supabase
-    .from("roller_daily_checks")
-    .insert(payload)
-    .select()
-    .single();
+  payload.status = submissionStatus;
+  payload.submitted_at = submissionStatus === "submitted" ? new Date().toISOString() : null;
+
+  let saveQuery = supabase
+    .from("roller_daily_checks");
+
+  delete payload.id;
+
+  let saveResult;
+  if (existingId) {
+    saveResult = await saveQuery
+      .update(payload)
+      .eq("id", existingId)
+      .select()
+      .single();
+  } else {
+    saveResult = await saveQuery
+      .insert(payload)
+      .select()
+      .single();
+  }
+
+  const { data: savedRow, error: saveError } = saveResult;
 
   if (saveError) {
     throw new Error(saveError.message || "Checklist save failed");
   }
 
-  const { data: routingData, error: routingError } = await supabase.functions.invoke(
-    "route-daily-checksheet",
-    {
+  let routingData = null;
+  let routingError = null;
+  if (submissionStatus === "submitted") {
+    const routingResult = await supabase.functions.invoke("route-daily-checksheet", {
       body: {
         source: "app",
         formCode,
@@ -100,14 +123,18 @@ export async function syncChecklistSubmission({ checklistPayload, defectsPayload
       headers: {
         Authorization: `Bearer ${session.access_token}`,
       },
-    }
-  );
+    });
+    routingData = routingResult.data;
+    routingError = routingResult.error;
+  }
 
   if (routingError || routingData?.success === false) {
     routingWarning = routingError?.message || routingData?.error || "Could not route checksheet to destinations.";
   }
 
   return {
+    savedRow,
+    submissionStatus,
     sentDefectCount,
     photoFallbackUsed,
     routingWarning,

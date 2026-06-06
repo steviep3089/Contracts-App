@@ -73,7 +73,7 @@ export default function MyDocumentsScreen() {
         supabase
           .from("roller_daily_checks")
           .select(
-            "id, created_at, check_date, machine_type, machine_reg, asset_no, serial_no, machine_hours, location, contract_name, completed_by_name, has_defects"
+            "id, created_at, submitted_at, status, check_date, machine_type, machine_reg, asset_no, serial_no, machine_hours, location, contract_name, completed_by_name, has_defects"
           )
           .eq("created_by", user.id)
           .order("created_at", { ascending: false })
@@ -118,7 +118,12 @@ export default function MyDocumentsScreen() {
         createdAt: row.created_at,
         type: "Plant Daily Checklists",
         title: row.machine_reg || row.asset_no || row.machine_type || "Plant Check",
-        status: row.has_defects ? "Defects Flagged" : "Completed",
+        status:
+          String(row.status || "").trim().toLowerCase() === "draft"
+            ? "Draft"
+            : row.has_defects
+              ? "Defects Flagged"
+              : "Completed",
         raw: row,
       }));
 
