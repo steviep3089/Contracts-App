@@ -14,7 +14,7 @@ import {
   Alert,
 } from "react-native";
 import AsyncStorage from "@react-native-async-storage/async-storage";
-import { supabase } from "../supabase";
+import { supabase, clearPersistedSupabaseSession, isRefreshTokenError } from "../supabase";
 
 export default function LoginScreen({ navigation }) {
   const [email, setEmail] = useState("");
@@ -35,6 +35,23 @@ export default function LoginScreen({ navigation }) {
     checkForRecovery();
   }, []);
 
+  async function resetStaleSessionIfNeeded() {
+    try {
+      const { data: { session }, error } = await supabase.auth.getSession();
+      if (error && isRefreshTokenError(error)) {
+        await clearPersistedSupabaseSession();
+        return true;
+      }
+      return !!session;
+    } catch (error) {
+      if (isRefreshTokenError(error)) {
+        await clearPersistedSupabaseSession();
+        return true;
+      }
+      return false;
+    }
+  }
+
   async function checkForRecovery() {
     const needsPasswordSetup = (user) =>
       !!(
@@ -47,10 +64,26 @@ export default function LoginScreen({ navigation }) {
         )
       );
 
+    const hadStaleSession = await resetStaleSessionIfNeeded();
+    if (hadStaleSession) {
+      return;
+    }
+
     const {
       data: { session },
+      error: sessionError,
     } = await supabase.auth.getSession();
-    const { data: userData } = await supabase.auth.getUser();
+
+    if (sessionError && isRefreshTokenError(sessionError)) {
+      await clearPersistedSupabaseSession();
+      return;
+    }
+
+    const { data: userData, error: userError } = await supabase.auth.getUser();
+    if (userError && isRefreshTokenError(userError)) {
+      await clearPersistedSupabaseSession();
+      return;
+    }
 
     if (session?.user) {
       const currentUser = userData?.user || session.user;

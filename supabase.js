@@ -12,3 +12,19 @@ export const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
     detectSessionInUrl: false,
   },
 });
+
+export function isRefreshTokenError(error) {
+  const message = (error && (error.message || String(error))) || "";
+  return /invalid refresh token|refresh token not found|refresh token/i.test(message);
+}
+
+export async function clearPersistedSupabaseSession() {
+  try {
+    const { error } = await supabase.auth.signOut({ scope: "global" });
+    if (error) {
+      console.warn("Supabase signOut failed while clearing stale session:", error.message);
+    }
+  } catch (error) {
+    console.warn("Supabase clear session failed:", error);
+  }
+}

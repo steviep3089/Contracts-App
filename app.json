@@ -6,11 +6,6 @@
     "orientation": "portrait",
     "icon": "./assets/contracting-app.png",
     "userInterfaceStyle": "light",
-    "splash": {
-      "image": "./assets/contracting-app.png",
-      "resizeMode": "contain",
-      "backgroundColor": "#ffffff"
-    },
     "assetBundlePatterns": [
       "**/*"
     ],
@@ -38,7 +33,14 @@
       }
     },
     "plugins": [
-      "@react-native-community/datetimepicker"
+      [
+        "expo-splash-screen",
+        {
+          "image": "./assets/contracting-app.png",
+          "backgroundColor": "#ffffff"
+        }
+      ],
+      "expo-font"
     ]
   }
 }
