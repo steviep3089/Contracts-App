@@ -28,6 +28,17 @@ function buildTodayIsoDate() {
   return `${y}-${m}-${d}`;
 }
 
+function getCurrentTimeValue() {
+  const now = new Date();
+  const totalMinutes = Math.min(Math.round((now.getHours() * 60 + now.getMinutes()) / 15) * 15, 23 * 60 + 45);
+  return `${String(Math.floor(totalMinutes / 60)).padStart(2, "0")}:${String(totalMinutes % 60).padStart(2, "0")}`;
+}
+
+const QUARTER_HOUR_OPTIONS = Array.from({ length: 96 }, (_, index) => {
+  const minutes = index * 15;
+  return `${String(Math.floor(minutes / 60)).padStart(2, "0")}:${String(minutes % 60).padStart(2, "0")}`;
+});
+
 function buildNextSundayIsoDate() {
   const now = new Date();
   const nextSunday = new Date(now);
@@ -63,10 +74,62 @@ function dedupeNames(names = []) {
   });
 }
 
+const NOT_OPERATIONAL_LABEL = "None Operational";
+const OPERATIONAL_STATUS_COLORS = {
+  operational: { backgroundColor: "#f0fdf4", borderColor: "#16a34a", textColor: "#166534" },
+  not_operational: { backgroundColor: "#fef2f2", borderColor: "#dc2626", textColor: "#991b1b" },
+};
+
+const ENVIRONMENTAL_STATUS_COLORS = {
+  satisfactory: { backgroundColor: "#f0fdf4", borderColor: "#16a34a", textColor: "#166534" },
+  unsatisfactory: { backgroundColor: "#fef2f2", borderColor: "#dc2626", textColor: "#991b1b" },
+  dry: { backgroundColor: "#f0fdf4", borderColor: "#16a34a", textColor: "#166534" },
+  raining: { backgroundColor: "#fef2f2", borderColor: "#dc2626", textColor: "#991b1b" },
+  variable: { backgroundColor: "#fffbeb", borderColor: "#d97706", textColor: "#92400e" },
+  snow: { backgroundColor: "#fef2f2", borderColor: "#dc2626", textColor: "#991b1b" },
+};
+
+const ENVIRONMENTAL_STATUS_OPTIONS = [
+  { value: "satisfactory", label: "Satisfactory" },
+  { value: "unsatisfactory", label: "Unsatisfactory" },
+];
+const ENVIRONMENTAL_WEATHER_OPTIONS = [
+  { value: "dry", label: "Dry" },
+  { value: "raining", label: "Raining" },
+  { value: "variable", label: "Variable" },
+  { value: "snow", label: "Snow" },
+];
+
 function createGuardChecksState() {
   return Object.fromEntries(
-    BATCHING_WEEK_DAYS.map((day) => [day, { checkedBy: "", defectReported: "", operatorSignature: "" }])
+    BATCHING_WEEK_DAYS.map((day) => [
+      day,
+      { checkedBy: "", defectReported: "", operatorSignature: "", signedTime: "", siteNotOperational: false },
+    ])
   );
+}
+
+function isGuardDayNotOperational(entry) {
+  if (!entry || typeof entry !== "object") return false;
+  if (entry.siteNotOperational) return true;
+  return String(entry.checkedBy || "").trim().toLowerCase() === NOT_OPERATIONAL_LABEL.toLowerCase();
+}
+
+function getNotOperationalDays(guardChecks) {
+  return new Set(BATCHING_WEEK_DAYS.filter((day) => isGuardDayNotOperational(guardChecks?.[day])));
+}
+
+function deriveInitialsFromName(name) {
+  const parts = String(name || "").trim().split(/\s+/).filter(Boolean);
+  if (parts.length === 0) return "";
+  if (parts.length === 1) return parts[0][0].toUpperCase();
+  return `${parts[0][0]}${parts[parts.length - 1][0]}`.toUpperCase();
+}
+
+function getDayInitials(guardChecks, day, fallbackName) {
+  const entry = guardChecks?.[day];
+  if (isGuardDayNotOperational(entry)) return "";
+  return deriveInitialsFromName(String(entry?.checkedBy || "").trim() || fallbackName);
 }
 
 function createMaintenanceDailyState() {
@@ -100,12 +163,12 @@ function createEnvDailyLogState() {
       Object.fromEntries(
         groups.map((group) => {
           if (group.slots.includes("pre_start")) {
-            return [group.key, { time: "", initials: "" }];
+            return [group.key, { time: "", initials: "", status: "", comment: "" }];
           }
           return [
             group.key,
             Object.fromEntries(
-              group.slots.map((slot) => [slot, { time: "", initials: "" }])
+              group.slots.map((slot) => [slot, { time: "", initials: "", status: "", comment: "" }])
             ),
           ];
         })
@@ -147,11 +210,17 @@ function buildBatchingSummary(checklist) {
   lines.push(["Form Kind", "Batching Plant Weekly Inspection"]);
   lines.push(["Sheets Completed", BATCHING_INSPECTION_CONFIG.sheets.map((sheet) => sheet.title).join(", ")]);
 
-  const guardCount = Object.values(checklist.health_and_safety.daily_guard_checks || {}).filter(
-    (entry) => String(entry?.checkedBy || "").trim()
+  const notOperationalDays = getNotOperationalDays(checklist.health_and_safety.daily_guard_checks);
+  const operationalDayCount = BATCHING_WEEK_DAYS.length - notOperationalDays.size;
+  const guardCount = Object.entries(checklist.health_and_safety.daily_guard_checks || {}).filter(
+    ([day, entry]) => !notOperationalDays.has(day) && String(entry?.checkedBy || "").trim()
   ).length;
-  lines.push(["H&S Daily Guard Checks", `${guardCount}/${BATCHING_WEEK_DAYS.length} days completed`]);
+  lines.push(["H&S Daily Guard Checks", `${guardCount}/${operationalDayCount} operational days completed`]);
+  if (notOperationalDays.size > 0) {
+    lines.push(["Not Operational Days", BATCHING_WEEK_DAYS.filter((day) => notOperationalDays.has(day)).join(", ")]);
+  }
   Object.entries(checklist.health_and_safety.daily_guard_checks || {}).forEach(([day, entry], index) => {
+    if (notOperationalDays.has(day)) return;
     const detail = [
       entry?.checkedBy,
       entry?.operatorSignature ? "Signed" : "",
@@ -164,31 +233,33 @@ function buildBatchingSummary(checklist) {
     }
   });
 
-  const maintenanceDays = Object.entries(checklist.health_and_safety.plant_maintenance_daily || {}).map(
-    ([day, entry]) => {
+  const maintenanceDays = Object.entries(checklist.health_and_safety.plant_maintenance_daily || {})
+    .filter(([day]) => !notOperationalDays.has(day))
+    .map(([day, entry]) => {
       const completed = Object.values(entry?.tasks || {}).filter(Boolean).length;
       return `${day}: ${completed} tasks`;
-    }
-  );
+    });
   maintenanceDays.forEach((line, index) => {
     lines.push([index === 0 ? "H&S Daily Maintenance" : "", line]);
   });
 
-  const envDeliveryCounts = Object.entries(checklist.environmental.powder_deliveries || {}).map(
-    ([day, entries]) => `${day}: ${Array.isArray(entries) ? entries.length : 0} deliveries`
-  );
+  const envDeliveryCounts = Object.entries(checklist.environmental.powder_deliveries || {})
+    .filter(([day]) => !notOperationalDays.has(day))
+    .map(([day, entries]) => `${day}: ${Array.isArray(entries) ? entries.length : 0} deliveries`);
   envDeliveryCounts.forEach((line, index) => {
     lines.push([index === 0 ? "Environmental Deliveries" : "", line]);
   });
 
-  const qualityDays = Object.entries(checklist.quality.daily_checks || {}).map(([day, entry]) => {
-    const completed = Object.values(entry || {}).reduce((count, taskSlots) => {
-      const am = String(taskSlots?.am || "").trim();
-      const pm = String(taskSlots?.pm || "").trim();
-      return count + (am ? 1 : 0) + (pm ? 1 : 0);
-    }, 0);
-    return `${day}: ${completed} slots completed`;
-  });
+  const qualityDays = Object.entries(checklist.quality.daily_checks || {})
+    .filter(([day]) => !notOperationalDays.has(day))
+    .map(([day, entry]) => {
+      const completed = Object.values(entry || {}).reduce((count, taskSlots) => {
+        const am = String(taskSlots?.am || "").trim();
+        const pm = String(taskSlots?.pm || "").trim();
+        return count + (am ? 1 : 0) + (pm ? 1 : 0);
+      }, 0);
+      return `${day}: ${completed} slots completed`;
+    });
   qualityDays.forEach((line, index) => {
     lines.push([index === 0 ? "Quality Daily" : "", line]);
   });
@@ -198,6 +269,7 @@ function buildBatchingSummary(checklist) {
       const completed = checklist[sheet.key]?.[section.key] || {};
       Object.entries(completed).forEach(([task, value], index) => {
         const detail = [
+          value.not_applicable ? "N/A" : "",
           value.checked_by,
           value.day,
           value.time,
@@ -245,20 +317,36 @@ function isBatchingWeeklyInspectionForm(form) {
 
 export { isBatchingWeeklyInspectionForm };
 
-function SectionPills({ options, selected, onSelect }) {
+function SectionPills({ options, selected, onSelect, colorByValue = {} }) {
   return (
     <View style={styles.pillRow}>
       {options.map((option) => {
         const key = typeof option === "string" ? option : option.value;
         const label = typeof option === "string" ? option : option.label;
         const active = selected === key;
+        const colors = colorByValue[key];
         return (
           <TouchableOpacity
             key={key}
-            style={[styles.pill, active && styles.pillActive]}
+            style={[
+              styles.pill,
+              active && styles.pillActive,
+              colors && {
+                backgroundColor: active ? colors.borderColor : colors.backgroundColor,
+                borderColor: colors.borderColor,
+              },
+            ]}
             onPress={() => onSelect(key)}
           >
-            <Text style={[styles.pillText, active && styles.pillTextActive]}>{label}</Text>
+            <Text
+              style={[
+                styles.pillText,
+                active && styles.pillTextActive,
+                colors && !active && { color: colors.textColor },
+              ]}
+            >
+              {label}
+            </Text>
           </TouchableOpacity>
         );
       })}
@@ -322,6 +410,11 @@ export default function BatchingWeeklyInspectionScreen({ route, navigation }) {
   const [jobTitle, setJobTitle] = useState("");
   const [weekEndingDate, setWeekEndingDate] = useState(buildNextSundayIsoDate());
   const [plantName, setPlantName] = useState(inferPlantOption(defaultContractName));
+  const [contractPlant, setContractPlant] = useState("");
+  const plantOptions = useMemo(
+    () => (contractPlant && !BATCHING_PLANT_OPTIONS.includes(contractPlant) ? [contractPlant, ...BATCHING_PLANT_OPTIONS] : BATCHING_PLANT_OPTIONS),
+    [contractPlant]
+  );
   const [selectedContractChoice, setSelectedContractChoice] = useState(defaultContractChoice);
   const [contractPickerVisible, setContractPickerVisible] = useState(false);
   const [plantPickerVisible, setPlantPickerVisible] = useState(false);
@@ -331,12 +424,17 @@ export default function BatchingWeeklyInspectionScreen({ route, navigation }) {
   const [maintenanceDay, setMaintenanceDay] = useState("Monday");
   const [qualityDay, setQualityDay] = useState("Monday");
   const [envDay, setEnvDay] = useState("Monday");
+  const [powderDay, setPowderDay] = useState("Monday");
   const [generalNotes, setGeneralNotes] = useState("");
   const [saving, setSaving] = useState(false);
   const [draftRecordId, setDraftRecordId] = useState("");
   const [weeklyModal, setWeeklyModal] = useState({ visible: false, sheetKey: "", sectionKey: "", task: "", values: {} });
+  const [groupSelect, setGroupSelect] = useState(null);
   const [defectModalVisible, setDefectModalVisible] = useState(false);
   const [showSignatureModal, setShowSignatureModal] = useState(false);
+  const [timePickerVisible, setTimePickerVisible] = useState(false);
+  const [timePickerTarget, setTimePickerTarget] = useState(null);
+  const timePickerScrollRef = useRef(null);
   const [signatureTarget, setSignatureTarget] = useState({ type: null, day: "", title: "Sign Check" });
   const [defectTarget, setDefectTarget] = useState({ type: null, day: "", title: "Report Defect" });
   const [hasSignatureStroke, setHasSignatureStroke] = useState(false);
@@ -351,15 +449,170 @@ export default function BatchingWeeklyInspectionScreen({ route, navigation }) {
   const [weeklyCompleted, setWeeklyCompleted] = useState(createWeeklyState);
   const lastLaunchTokenRef = useRef(null);
 
+  const notOperationalDays = useMemo(() => getNotOperationalDays(guardChecks), [guardChecks]);
+  const operationalWeekDays = useMemo(
+    () => BATCHING_WEEK_DAYS.filter((day) => !notOperationalDays.has(day)),
+    [notOperationalDays]
+  );
+  const operationalWorkDays = useMemo(
+    () => BATCHING_WORK_DAYS.filter((day) => !notOperationalDays.has(day)),
+    [notOperationalDays]
+  );
+
+  const lastAutoInitialsRef = useRef({});
+
+  useEffect(() => {
+    const defaults = Object.fromEntries(
+      BATCHING_WEEK_DAYS.map((day) => [day, getDayInitials(guardChecks, day, completedBy)])
+    );
+    const previous = lastAutoInitialsRef.current;
+    lastAutoInitialsRef.current = defaults;
+
+    // Fill when empty, when it is a partial prefix, or when it still holds the last auto-filled value.
+    const resolve = (current, day) => {
+      const next = defaults[day];
+      if (!next) return current;
+      const value = String(current || "").trim().toUpperCase();
+      if (!value) return next;
+      if (value === previous[day] && value !== next) return next;
+      if (value.length < next.length && next.startsWith(value)) return next;
+      return current;
+    };
+
+    setMaintenanceDaily((prev) => {
+      let changed = false;
+      const result = { ...prev };
+      BATCHING_WORK_DAYS.forEach((day) => {
+        const next = resolve(prev[day]?.initials, day);
+        if (next !== prev[day]?.initials) {
+          result[day] = { ...prev[day], initials: next };
+          changed = true;
+        }
+      });
+      return changed ? result : prev;
+    });
+
+    setEnvDailyLog((prev) => {
+      let changed = false;
+      const result = { ...prev };
+      BATCHING_WEEK_DAYS.forEach((day) => {
+        const dayState = prev[day];
+        if (!dayState) return;
+        const nextDay = { ...dayState };
+        Object.entries(dayState).forEach(([groupKey, groupState]) => {
+          if (groupState && typeof groupState === "object" && "initials" in groupState) {
+            const next = resolve(groupState.initials, day);
+            if (next !== groupState.initials) {
+              nextDay[groupKey] = { ...groupState, initials: next };
+              changed = true;
+            }
+            return;
+          }
+          const nextGroup = { ...groupState };
+          Object.entries(groupState || {}).forEach(([slot, slotState]) => {
+            const next = resolve(slotState?.initials, day);
+            if (next !== slotState?.initials) {
+              nextGroup[slot] = { ...slotState, initials: next };
+              changed = true;
+            }
+          });
+          nextDay[groupKey] = nextGroup;
+        });
+        result[day] = nextDay;
+      });
+      return changed ? result : prev;
+    });
+
+    setPowderDeliveries((prev) => {
+      let changed = false;
+      const result = { ...prev };
+      BATCHING_WEEK_DAYS.forEach((day) => {
+        const entries = Array.isArray(prev[day]) ? prev[day] : [];
+        const nextEntries = entries.map((entry) => {
+          const next = resolve(entry?.initials, day);
+          if (next === entry?.initials) return entry;
+          changed = true;
+          return { ...entry, initials: next };
+        });
+        result[day] = nextEntries;
+      });
+      return changed ? result : prev;
+    });
+  }, [guardChecks, completedBy]);
+
+  const pickerCurrentValue = timePickerTarget
+    ? powderDeliveries[timePickerTarget.day]?.[timePickerTarget.index]?.[timePickerTarget.field] || ""
+    : weeklyModal.values.time || "";
+
+  const weeklySubModalOpen =
+    timePickerVisible ||
+    (showSignatureModal && signatureTarget.type === "weekly") ||
+    (teamPicker.visible && teamPicker.target === "weekly_checked_by") ||
+    (defectModalVisible && defectTarget.type === "weekly");
+
+  useEffect(() => {
+    if (operationalWorkDays.length > 0) {
+      if (!operationalWorkDays.includes(maintenanceDay)) setMaintenanceDay(operationalWorkDays[0]);
+      if (!operationalWorkDays.includes(qualityDay)) setQualityDay(operationalWorkDays[0]);
+    }
+    if (operationalWeekDays.length > 0 && !operationalWeekDays.includes(envDay)) {
+      setEnvDay(operationalWeekDays[0]);
+    }
+  }, [operationalWorkDays, operationalWeekDays, maintenanceDay, qualityDay, envDay]);
+
+  function setGuardDayOperational(day, operational) {
+    setGuardChecks((prev) => ({
+      ...prev,
+      [day]: operational
+        ? {
+            ...prev[day],
+            siteNotOperational: false,
+            checkedBy: String(currentUserName || completedBy || "").trim(),
+          }
+        : {
+            checkedBy: NOT_OPERATIONAL_LABEL,
+            defectReported: "",
+            operatorSignature: "",
+            siteNotOperational: true,
+          },
+    }));
+  }
   useEffect(() => {
     setSelectedContractChoice(defaultContractChoice);
   }, [defaultContractChoice]);
 
   useEffect(() => {
-    if (!BATCHING_PLANT_OPTIONS.includes(plantName)) {
+    if (!plantOptions.includes(plantName)) {
       setPlantName(inferPlantOption(defaultContractName));
     }
-  }, [defaultContractName, plantName]);
+  }, [defaultContractName, plantName, plantOptions]);
+
+  const selectedContractId = selectedContractChoice?.id || null;
+  const launchToken = launch?.token || null;
+  const launchMode = launch?.mode || "";
+  useEffect(() => {
+    let cancelled = false;
+    if (!selectedContractId) {
+      setContractPlant("");
+      return undefined;
+    }
+    supabase
+      .from("contracts")
+      .select("plant")
+      .eq("id", selectedContractId)
+      .maybeSingle()
+      .then(({ data }) => {
+        if (cancelled) return;
+        const plant = String(data?.plant || "").trim();
+        setContractPlant(plant);
+        if (plant && launchMode !== "draft" && launchMode !== "copy") {
+          setPlantName(plant);
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [selectedContractId, launchToken, launchMode]);
 
   const currentContractName = String(
     selectedContractChoice?.contractName ||
@@ -555,20 +808,51 @@ export default function BatchingWeeklyInspectionScreen({ route, navigation }) {
     }
   }
 
-  function openWeeklyModal(sheetKey, sectionKey, task, existing = {}) {
+  function openWeeklyModal(sheetKey, sectionKey, task, existing = {}, groupTasks = null) {
     setWeeklyModal({
       visible: true,
       sheetKey,
       sectionKey,
       task,
+      groupTasks,
       values: {
         checked_by: String(existing.checked_by || completedBy || "").trim(),
         defect_reported: String(existing.defect_reported || "").trim(),
         day: String(existing.day || envDay || "Monday").trim(),
-        time: String(existing.time || "").trim(),
+        time: String(existing.time || "").trim() || getCurrentTimeValue(),
         operator_signature: String(existing.operator_signature || "").trim(),
       },
     });
+  }
+
+  function startGroupSelect(sheetKey, sectionKey, task) {
+    setGroupSelect((prev) =>
+      prev && prev.sheetKey === sheetKey && prev.sectionKey === sectionKey
+        ? prev.tasks.includes(task)
+          ? prev
+          : { ...prev, tasks: [...prev.tasks, task] }
+        : { sheetKey, sectionKey, tasks: [task] }
+    );
+  }
+
+  function toggleGroupTask(task) {
+    setGroupSelect((prev) => {
+      if (!prev) return prev;
+      const tasks = prev.tasks.includes(task) ? prev.tasks.filter((item) => item !== task) : [...prev.tasks, task];
+      return tasks.length === 0 ? null : { ...prev, tasks };
+    });
+  }
+
+  function openGroupWeeklyModal() {
+    if (!groupSelect || groupSelect.tasks.length === 0) return;
+    const count = groupSelect.tasks.length;
+    openWeeklyModal(
+      groupSelect.sheetKey,
+      groupSelect.sectionKey,
+      `${count} selected check${count === 1 ? "" : "s"}`,
+      {},
+      groupSelect.tasks
+    );
   }
 
   function openTeamMemberPicker(target, day = "") {
@@ -597,6 +881,10 @@ export default function BatchingWeeklyInspectionScreen({ route, navigation }) {
         values: {
           ...prev.values,
           checked_by: name,
+          operator_signature:
+            String(prev.values.checked_by || "").trim().toLowerCase() === String(name || "").trim().toLowerCase()
+              ? prev.values.operator_signature
+              : "",
         },
       }));
     }
@@ -614,7 +902,46 @@ export default function BatchingWeeklyInspectionScreen({ route, navigation }) {
     openSignatureModal();
   }
 
+  function findSavedSignatureForPerson(name) {
+    const target = String(name || "").trim().toLowerCase();
+    if (!target) return "";
+
+    for (const day of operationalWeekDays) {
+      const entry = guardChecks[day];
+      if (String(entry?.checkedBy || "").trim().toLowerCase() === target && String(entry?.operatorSignature || "").trim()) {
+        return entry.operatorSignature;
+      }
+    }
+
+    for (const sheet of BATCHING_INSPECTION_CONFIG.sheets) {
+      for (const section of sheet.weeklySections || []) {
+        const completed = weeklyCompleted[sheet.key]?.[section.key] || {};
+        for (const value of Object.values(completed)) {
+          if (
+            String(value?.checked_by || "").trim().toLowerCase() === target &&
+            String(value?.operator_signature || "").trim()
+          ) {
+            return value.operator_signature;
+          }
+        }
+      }
+    }
+
+    return "";
+  }
+
   function openWeeklySignature() {
+    const hasSignature = Boolean(String(weeklyModal.values.operator_signature || "").trim());
+    if (!hasSignature) {
+      const saved = findSavedSignatureForPerson(weeklyModal.values.checked_by);
+      if (saved) {
+        setWeeklyModal((prev) => ({
+          ...prev,
+          values: { ...prev.values, operator_signature: saved },
+        }));
+        return;
+      }
+    }
     setSignatureTarget({ type: "weekly", day: "", title: `Sign Weekly Check` });
     openSignatureModal();
   }
@@ -626,6 +953,7 @@ export default function BatchingWeeklyInspectionScreen({ route, navigation }) {
         [signatureTarget.day]: {
           ...prev[signatureTarget.day],
           operatorSignature: signature,
+          signedTime: getCurrentTimeValue(),
         },
       }));
     } else {
@@ -697,11 +1025,12 @@ export default function BatchingWeeklyInspectionScreen({ route, navigation }) {
   }
 
   function saveWeeklyModal() {
-    const { sheetKey, sectionKey, task, values } = weeklyModal;
+    const { sheetKey, sectionKey, task, values, groupTasks } = weeklyModal;
     if (!sheetKey || !sectionKey || !task) {
       setWeeklyModal({ visible: false, sheetKey: "", sectionKey: "", task: "", values: {} });
       return;
     }
+    const savedTasks = Array.isArray(groupTasks) && groupTasks.length > 0 ? groupTasks : [task];
 
     const section = BATCHING_INSPECTION_CONFIG.sheets
       .find((sheet) => sheet.key === sheetKey)
@@ -716,10 +1045,18 @@ export default function BatchingWeeklyInspectionScreen({ route, navigation }) {
       }
     }
 
-    if (requiredFields.includes("defect_reported") && !String(values.operator_signature || "").trim()) {
-      Alert.alert("Missing Signature", `Add operator signature for ${task}.`);
+    if (!String(values.operator_signature || "").trim()) {
+      Alert.alert("Missing Signature", `Add or reuse an operator signature for ${task}.`);
       return;
     }
+
+    const completedValue = {
+      checked_by: String(values.checked_by || "").trim(),
+      defect_reported: String(values.defect_reported || "").trim(),
+      day: String(values.day || "").trim(),
+      time: String(values.time || "").trim(),
+      operator_signature: String(values.operator_signature || "").trim(),
+    };
 
     setWeeklyCompleted((prev) => ({
       ...prev,
@@ -727,17 +1064,40 @@ export default function BatchingWeeklyInspectionScreen({ route, navigation }) {
         ...prev[sheetKey],
         [sectionKey]: {
           ...prev[sheetKey][sectionKey],
-          [task]: {
-            checked_by: String(values.checked_by || "").trim(),
-            defect_reported: String(values.defect_reported || "").trim(),
-            day: String(values.day || "").trim(),
-            time: String(values.time || "").trim(),
-            operator_signature: String(values.operator_signature || "").trim(),
-          },
+          ...Object.fromEntries(savedTasks.map((item) => [item, { ...completedValue }])),
         },
       },
     }));
 
+    setGroupSelect(null);
+    setWeeklyModal({ visible: false, sheetKey: "", sectionKey: "", task: "", values: {} });
+  }
+
+  function saveWeeklyNotApplicable() {
+    const { sheetKey, sectionKey, task, values, groupTasks } = weeklyModal;
+    if (!sheetKey || !sectionKey || !task) return;
+    const targetTasks = Array.isArray(groupTasks) && groupTasks.length > 0 ? groupTasks : [task];
+    const naValue = {
+      not_applicable: true,
+      checked_by: String(values.checked_by || "").trim(),
+      defect_reported: "",
+      day: String(values.day || "").trim(),
+      time: String(values.time || "").trim(),
+      operator_signature: "",
+    };
+
+    setWeeklyCompleted((prev) => ({
+      ...prev,
+      [sheetKey]: {
+        ...prev[sheetKey],
+        [sectionKey]: {
+          ...prev[sheetKey][sectionKey],
+          ...Object.fromEntries(targetTasks.map((item) => [item, { ...naValue }])),
+        },
+      },
+    }));
+
+    setGroupSelect(null);
     setWeeklyModal({ visible: false, sheetKey: "", sectionKey: "", task: "", values: {} });
   }
 
@@ -824,10 +1184,30 @@ export default function BatchingWeeklyInspectionScreen({ route, navigation }) {
   }
 
   function addPowderDelivery(day) {
+    const initials =
+      getDayInitials(guardChecks, day, completedBy) || deriveInitialsFromName(completedBy || currentUserName);
     setPowderDeliveries((prev) => ({
       ...prev,
-      [day]: [...prev[day], { start: "", finish: "", initials: "" }],
+      [day]: [...prev[day], { start: getCurrentTimeValue(), finish: "", initials }],
     }));
+  }
+
+  function openDeliveryTimePicker(day, index, field) {
+    setTimePickerTarget({ day, index, field });
+    setTimePickerVisible(true);
+  }
+
+  function selectPickerTime(option) {
+    if (timePickerTarget) {
+      updatePowderDelivery(timePickerTarget.day, timePickerTarget.index, timePickerTarget.field, option);
+    } else {
+      setWeeklyModal((prev) => ({ ...prev, values: { ...prev.values, time: option } }));
+    }
+    setTimePickerVisible(false);
+  }
+
+  function closeTimePicker() {
+    setTimePickerVisible(false);
   }
 
   function updatePowderDelivery(day, index, field, value) {
@@ -847,6 +1227,16 @@ export default function BatchingWeeklyInspectionScreen({ route, navigation }) {
   }
 
   function buildStructuredChecklist() {
+    const offDays = getNotOperationalDays(guardChecks);
+    const blankMaintenance = createMaintenanceDailyState();
+    const blankEnvLog = createEnvDailyLogState();
+    const blankEmissions = createEnvEmissionsState();
+    const blankQuality = createQualityDailyState();
+    const clearOffDays = (source, blank) =>
+      Object.fromEntries(
+        Object.entries(source).map(([day, value]) => [day, offDays.has(day) && blank[day] ? blank[day] : value])
+      );
+
     const payload = {
       __kind: BATCHING_INSPECTION_CONFIG.kind,
       meta: {
@@ -856,18 +1246,18 @@ export default function BatchingWeeklyInspectionScreen({ route, navigation }) {
       },
       health_and_safety: {
         daily_guard_checks: guardChecks,
-        plant_maintenance_daily: maintenanceDaily,
+        plant_maintenance_daily: clearOffDays(maintenanceDaily, blankMaintenance),
         weekly_equipment_checks: weeklyCompleted.health_and_safety.weekly_equipment_checks,
         plant_maintenance_weekly: weeklyCompleted.health_and_safety.plant_maintenance_weekly,
       },
       environmental: {
-        daily_logbook: envDailyLog,
+        daily_logbook: clearOffDays(envDailyLog, blankEnvLog),
         powder_deliveries: powderDeliveries,
-        emissions_ratings: envEmissions,
+        emissions_ratings: clearOffDays(envEmissions, blankEmissions),
         environmental_weekly_checks: weeklyCompleted.environmental.environmental_weekly_checks,
       },
       quality: {
-        daily_checks: qualityDaily,
+        daily_checks: clearOffDays(qualityDaily, blankQuality),
         quality_weekly_checks: weeklyCompleted.quality.quality_weekly_checks,
       },
       notes: generalNotes.trim(),
@@ -981,7 +1371,7 @@ export default function BatchingWeeklyInspectionScreen({ route, navigation }) {
     if (!completedBy.trim()) return "Completed By is required.";
     if (!plantName.trim()) return "Plant name is required.";
 
-    for (const day of BATCHING_WEEK_DAYS) {
+    for (const day of operationalWeekDays) {
       if (!String(guardChecks[day]?.checkedBy || "").trim()) {
         return `Enter Checked By for ${day} in Daily Guard Checks.`;
       }
@@ -990,7 +1380,7 @@ export default function BatchingWeeklyInspectionScreen({ route, navigation }) {
       }
     }
 
-    for (const day of BATCHING_WORK_DAYS) {
+    for (const day of operationalWorkDays) {
       if (!String(maintenanceDaily[day]?.initials || "").trim()) {
         return `Enter initials for ${day} in Plant Maintenance Daily Checks.`;
       }
@@ -1002,19 +1392,35 @@ export default function BatchingWeeklyInspectionScreen({ route, navigation }) {
     }
 
     const envGroups = BATCHING_INSPECTION_CONFIG.sheets[1].dailySections[0].groups;
-    for (const day of BATCHING_WEEK_DAYS) {
+    for (const day of operationalWeekDays) {
       for (const group of envGroups) {
         if (group.slots.includes("pre_start")) {
           const entry = envDailyLog[day]?.[group.key];
-          if (!String(entry?.time || "").trim() || !String(entry?.initials || "").trim()) {
-            return `Complete Pre Start fields for ${day} in Environmental.`;
+          if (!String(entry?.status || "").trim()) {
+            return `Select a status for Environmental Pre Start on ${day}.`;
+          }
+          if (!String(entry?.initials || "").trim()) {
+            return `Enter initials for Environmental Pre Start on ${day}.`;
+          }
+          if (entry.status === "unsatisfactory" && !String(entry.comment || "").trim()) {
+            return `Enter a comment for Environmental Pre Start on ${day} when Unsatisfactory is selected.`;
           }
           continue;
         }
         for (const slot of group.slots) {
           const entry = envDailyLog[day]?.[group.key]?.[slot];
-          if (!String(entry?.time || "").trim() || !String(entry?.initials || "").trim()) {
-            return `Complete ${group.key.toUpperCase()} ${slot.toUpperCase()} for ${day} in Environmental.`;
+          if (!String(entry?.status || "").trim()) {
+            return `Select a status for Environmental ${group.key.toUpperCase()} ${slot.toUpperCase()} on ${day}.`;
+          }
+          if (!String(entry?.initials || "").trim()) {
+            return `Enter initials for Environmental ${group.key.toUpperCase()} ${slot.toUpperCase()} on ${day}.`;
+          }
+          if (
+            group.key !== "F" &&
+            entry.status === "unsatisfactory" &&
+            !String(entry.comment || "").trim()
+          ) {
+            return `Enter a comment for Environmental ${group.key.toUpperCase()} ${slot.toUpperCase()} on ${day} when Unsatisfactory is selected.`;
           }
         }
       }
@@ -1027,7 +1433,7 @@ export default function BatchingWeeklyInspectionScreen({ route, navigation }) {
       }
     }
 
-    for (const day of BATCHING_WORK_DAYS) {
+    for (const day of operationalWorkDays) {
       for (const [task, slots] of Object.entries(qualityDaily[day] || {})) {
         if (!String(slots?.am || "").trim() || !String(slots?.pm || "").trim()) {
           return `Complete AM and PM for '${task}' on ${day} in Quality.`;
@@ -1112,23 +1518,56 @@ export default function BatchingWeeklyInspectionScreen({ route, navigation }) {
     const completedMap = weeklyCompleted[sheetKey]?.[section.key] || {};
     const availableTasks = section.tasks.filter((task) => !completedMap[task]);
     const completedEntries = Object.entries(completedMap);
+    const selecting = Boolean(groupSelect && groupSelect.sheetKey === sheetKey && groupSelect.sectionKey === section.key);
+    const selectedTasks = selecting ? groupSelect.tasks.filter((task) => availableTasks.includes(task)) : [];
 
     return (
       <View style={styles.sectionCard} key={section.key}>
         <Text style={styles.sectionTitle}>{section.title}</Text>
         <Text style={styles.sectionSubheading}>Available</Text>
+        {!selecting && availableTasks.length > 1 ? (
+          <Text style={styles.helper}>Press and hold a check to select several and sign them together.</Text>
+        ) : null}
+        {selecting ? (
+          <View style={styles.dayCard}>
+            <Text style={styles.dayHeading}>{selectedTasks.length} selected</Text>
+            <View style={styles.modalActions}>
+              <TouchableOpacity style={[styles.buttonInline, styles.buttonGhost]} onPress={() => setGroupSelect(null)}>
+                <Text style={styles.buttonGhostText}>Cancel</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={[styles.buttonInline, styles.buttonGhost]}
+                onPress={() => setGroupSelect({ sheetKey, sectionKey: section.key, tasks: availableTasks })}
+              >
+                <Text style={styles.buttonGhostText}>Select all</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={[styles.buttonInline, selectedTasks.length === 0 && styles.buttonDisabled]}
+                disabled={selectedTasks.length === 0}
+                onPress={openGroupWeeklyModal}
+              >
+                <Text style={styles.buttonText}>Complete selected</Text>
+              </TouchableOpacity>
+            </View>
+          </View>
+        ) : null}
         {availableTasks.length === 0 ? (
           <Text style={styles.helper}>All weekly tasks for this section are completed.</Text>
         ) : (
-          availableTasks.map((task) => (
-            <TouchableOpacity
-              key={task}
-              style={styles.availableTaskButton}
-              onPress={() => openWeeklyModal(sheetKey, section.key, task)}
-            >
-              <Text style={styles.availableTaskText}>{task}</Text>
-            </TouchableOpacity>
-          ))
+          availableTasks.map((task) => {
+            const picked = selectedTasks.includes(task);
+            return (
+              <TouchableOpacity
+                key={task}
+                style={[styles.availableTaskButton, picked && { borderColor: "#2563eb", backgroundColor: "#eff6ff" }]}
+                delayLongPress={350}
+                onPress={() => (selecting ? toggleGroupTask(task) : openWeeklyModal(sheetKey, section.key, task))}
+                onLongPress={() => startGroupSelect(sheetKey, section.key, task)}
+              >
+                <Text style={styles.availableTaskText}>{picked ? `✓ ${task}` : task}</Text>
+              </TouchableOpacity>
+            );
+          })
         )}
 
         <Text style={styles.sectionSubheading}>Completed</Text>
@@ -1138,7 +1577,7 @@ export default function BatchingWeeklyInspectionScreen({ route, navigation }) {
           completedEntries.map(([task, value]) => (
             <View key={task} style={styles.completedCard}>
               <View style={styles.completedHeader}>
-                <Text style={styles.completedTitle}>{task}</Text>
+                <Text style={styles.completedTitle}>{value.not_applicable ? `${task} - N/A` : task}</Text>
                 <TouchableOpacity onPress={() => removeWeeklyTask(sheetKey, section.key, task)}>
                   <Text style={styles.removeText}>Remove</Text>
                 </TouchableOpacity>
@@ -1174,39 +1613,68 @@ export default function BatchingWeeklyInspectionScreen({ route, navigation }) {
           <Text style={styles.helper}>
             All guards must be checked prior to production commencing to ensure they are safe, secure and in position.
           </Text>
-          {BATCHING_WEEK_DAYS.map((day) => (
-            <View key={day} style={styles.dayCard}>
-              <Text style={styles.dayHeading}>{day}</Text>
-              <TouchableOpacity style={styles.selectorButton} onPress={() => openTeamMemberPicker("guard_checked_by", day)}>
-                <Text style={guardChecks[day].checkedBy ? styles.selectorText : styles.selectorPlaceholder}>
-                  {guardChecks[day].checkedBy || "Select checked by"}
-                </Text>
-              </TouchableOpacity>
-              <View style={styles.inlineActionRow}>
-                <TouchableOpacity style={styles.signatureButton} onPress={() => openGuardSignature(day)}>
-                  <Text style={styles.signatureButtonText}>
-                    {guardChecks[day].operatorSignature ? "Edit signature" : "Click to sign"}
+          {BATCHING_WEEK_DAYS.map((day) => {
+            const dayNotOperational = isGuardDayNotOperational(guardChecks[day]);
+            return (
+              <View key={day} style={styles.dayCard}>
+                <Text style={styles.dayHeading}>{day}</Text>
+                <SectionPills
+                  options={[
+                    { value: "operational", label: "Operational" },
+                    { value: "not_operational", label: "Not Operational" },
+                  ]}
+                  colorByValue={OPERATIONAL_STATUS_COLORS}
+                  selected={dayNotOperational ? "not_operational" : "operational"}
+                  onSelect={(value) => {
+                    const wantsNotOperational = value === "not_operational";
+                    if (wantsNotOperational !== dayNotOperational) {
+                      setGuardDayOperational(day, !wantsNotOperational);
+                    }
+                  }}
+                />
+                {dayNotOperational ? (
+                  <Text style={styles.helper}>
+                    Plant not operational on {day}. No checks are required for this day.
                   </Text>
-                </TouchableOpacity>
-                <TouchableOpacity style={styles.secondaryActionButton} onPress={() => openGuardDefect(day)}>
-                  <Text style={styles.secondaryActionButtonText}>
-                    {guardChecks[day].defectReported ? "Edit defect report" : "Report defect"}
-                  </Text>
-                </TouchableOpacity>
+                ) : (
+                  <>
+                    <TouchableOpacity style={styles.selectorButton} onPress={() => openTeamMemberPicker("guard_checked_by", day)}>
+                      <Text style={guardChecks[day].checkedBy ? styles.selectorText : styles.selectorPlaceholder}>
+                        {guardChecks[day].checkedBy || "Select checked by"}
+                      </Text>
+                    </TouchableOpacity>
+                    <View style={styles.inlineActionRow}>
+                      <TouchableOpacity style={styles.signatureButton} onPress={() => openGuardSignature(day)}>
+                        <Text style={styles.signatureButtonText}>
+                          {guardChecks[day].operatorSignature ? "Edit signature" : "Click to sign"}
+                        </Text>
+                      </TouchableOpacity>
+                      <TouchableOpacity style={styles.secondaryActionButton} onPress={() => openGuardDefect(day)}>
+                        <Text style={styles.secondaryActionButtonText}>
+                          {guardChecks[day].defectReported ? "Edit defect report" : "Report defect"}
+                        </Text>
+                      </TouchableOpacity>
+                    </View>
+                    {guardChecks[day].operatorSignature ? (
+                      <Text style={styles.completedMeta}>Operator signature captured</Text>
+                    ) : null}
+                    {guardChecks[day].defectReported ? (
+                      <Text style={styles.completedMeta}>Defect: {guardChecks[day].defectReported}</Text>
+                    ) : null}
+                  </>
+                )}
               </View>
-              {guardChecks[day].operatorSignature ? (
-                <Text style={styles.completedMeta}>Operator signature captured</Text>
-              ) : null}
-              {guardChecks[day].defectReported ? (
-                <Text style={styles.completedMeta}>Defect: {guardChecks[day].defectReported}</Text>
-              ) : null}
-            </View>
-          ))}
+            );
+          })}
         </View>
 
         <View style={styles.sectionCard}>
           <Text style={styles.sectionTitle}>Plant Maintenance Daily Checks</Text>
-          <SectionPills options={BATCHING_WORK_DAYS} selected={maintenanceDay} onSelect={setMaintenanceDay} />
+          {operationalWorkDays.length === 0 ? (
+            <Text style={styles.helper}>Plant not operational Monday to Friday. No daily maintenance checks required.</Text>
+          ) : (
+            <>
+          <SectionPills options={operationalWorkDays} selected={maintenanceDay} onSelect={setMaintenanceDay} />
           <TouchableOpacity style={styles.addButton} onPress={() => markAllMaintenanceTasksComplete(maintenanceDay)}>
             <Text style={styles.addButtonText}>Mark all as complete</Text>
           </TouchableOpacity>
@@ -1231,6 +1699,8 @@ export default function BatchingWeeklyInspectionScreen({ route, navigation }) {
               />
             </View>
           ))}
+            </>
+          )}
         </View>
 
         {weeklySections.map((section) => renderWeeklySection("health_and_safety", section))}
@@ -1238,14 +1708,75 @@ export default function BatchingWeeklyInspectionScreen({ route, navigation }) {
     );
   }
 
+  // Deliveries can arrive on non-operational days, so every day stays selectable.
+  function renderPowderDeliveries() {
+    return (
+      <View style={styles.sectionCard}>
+        <Text style={styles.sectionTitle}>Powder Deliveries</Text>
+        <SectionPills options={BATCHING_WEEK_DAYS} selected={powderDay} onSelect={setPowderDay} />
+        <TouchableOpacity style={styles.addButton} onPress={() => addPowderDelivery(powderDay)}>
+          <Text style={styles.addButtonText}>Add Delivery</Text>
+        </TouchableOpacity>
+        {(powderDeliveries[powderDay] || []).length === 0 ? (
+          <Text style={styles.helper}>No powder deliveries added for {powderDay}.</Text>
+        ) : (
+          powderDeliveries[powderDay].map((entry, index) => (
+            <View key={`${powderDay}-${index}`} style={styles.deliveryCard}>
+              <Text style={styles.dayHeading}>Delivery {index + 1}</Text>
+              <TouchableOpacity
+                style={styles.selectorButton}
+                onPress={() => openDeliveryTimePicker(powderDay, index, "start")}
+              >
+                <Text style={entry.start ? styles.selectorText : styles.selectorPlaceholder}>
+                  {entry.start ? `Start: ${entry.start}` : "Select start time"}
+                </Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={styles.selectorButton}
+                onPress={() => openDeliveryTimePicker(powderDay, index, "finish")}
+              >
+                <Text style={entry.finish ? styles.selectorText : styles.selectorPlaceholder}>
+                  {entry.finish ? `Finish: ${entry.finish}` : "Select finish time"}
+                </Text>
+              </TouchableOpacity>
+              <TextInput
+                style={styles.input}
+                value={entry.initials}
+                onChangeText={(value) => updatePowderDelivery(powderDay, index, "initials", value)}
+                placeholder="Initials"
+              />
+              <TouchableOpacity onPress={() => removePowderDelivery(powderDay, index)}>
+                <Text style={styles.removeText}>Remove delivery</Text>
+              </TouchableOpacity>
+            </View>
+          ))
+        )}
+      </View>
+    );
+  }
+
   function renderEnvironmental() {
     const groups = BATCHING_INSPECTION_CONFIG.sheets[1].dailySections[0].groups;
     const areas = BATCHING_INSPECTION_CONFIG.sheets[1].dailySections[2].areas;
+    if (operationalWeekDays.length === 0) {
+      return (
+        <>
+          <View style={styles.sectionCard}>
+            <Text style={styles.sectionTitle}>Environmental Logbook</Text>
+            <Text style={styles.helper}>Plant not operational all week. No daily environmental checks required.</Text>
+          </View>
+          {renderPowderDeliveries()}
+          {BATCHING_INSPECTION_CONFIG.sheets[1].weeklySections.map((section) =>
+            renderWeeklySection("environmental", section)
+          )}
+        </>
+      );
+    }
     return (
       <>
         <View style={styles.sectionCard}>
           <Text style={styles.sectionTitle}>Environmental Logbook</Text>
-          <SectionPills options={BATCHING_WEEK_DAYS} selected={envDay} onSelect={setEnvDay} />
+          <SectionPills options={operationalWeekDays} selected={envDay} onSelect={setEnvDay} />
           {groups.map((group) => (
             <View key={group.key} style={styles.dayCard}>
               <Text style={styles.dayHeading}>
@@ -1254,19 +1785,19 @@ export default function BatchingWeeklyInspectionScreen({ route, navigation }) {
               {group.instruction ? <Text style={styles.helper}>{group.instruction}</Text> : null}
               {group.slots.includes("pre_start") ? (
                 <>
-                  <TextInput
-                    style={styles.input}
-                    value={envDailyLog[envDay][group.key].time}
-                    onChangeText={(value) =>
+                  <SectionPills
+                    options={ENVIRONMENTAL_STATUS_OPTIONS}
+                    selected={envDailyLog[envDay][group.key].status}
+                    onSelect={(value) =>
                       setEnvDailyLog((prev) => ({
                         ...prev,
                         [envDay]: {
                           ...prev[envDay],
-                          [group.key]: { ...prev[envDay][group.key], time: value },
+                          [group.key]: { ...prev[envDay][group.key], status: value },
                         },
                       }))
                     }
-                    placeholder="Time / entry"
+                    colorByValue={ENVIRONMENTAL_STATUS_COLORS}
                   />
                   <TextInput
                     style={styles.input}
@@ -1282,27 +1813,44 @@ export default function BatchingWeeklyInspectionScreen({ route, navigation }) {
                     }
                     placeholder="Initials"
                   />
+                  {envDailyLog[envDay][group.key].status === "unsatisfactory" ? (
+                    <TextInput
+                      style={styles.input}
+                      value={envDailyLog[envDay][group.key].comment || ""}
+                      onChangeText={(value) =>
+                        setEnvDailyLog((prev) => ({
+                          ...prev,
+                          [envDay]: {
+                            ...prev[envDay],
+                            [group.key]: { ...prev[envDay][group.key], comment: value },
+                          },
+                        }))
+                      }
+                      placeholder="Comment (required for Unsatisfactory)"
+                      multiline
+                    />
+                  ) : null}
                 </>
               ) : (
                 group.slots.map((slot) => (
                   <View key={slot} style={styles.slotBlock}>
                     <Text style={styles.slotHeading}>{slot.toUpperCase()}</Text>
-                    <TextInput
-                      style={styles.input}
-                      value={envDailyLog[envDay][group.key][slot].time}
-                      onChangeText={(value) =>
+                    <SectionPills
+                      options={group.key === "F" ? ENVIRONMENTAL_WEATHER_OPTIONS : ENVIRONMENTAL_STATUS_OPTIONS}
+                      selected={envDailyLog[envDay][group.key][slot].status}
+                      onSelect={(value) =>
                         setEnvDailyLog((prev) => ({
                           ...prev,
                           [envDay]: {
                             ...prev[envDay],
                             [group.key]: {
                               ...prev[envDay][group.key],
-                              [slot]: { ...prev[envDay][group.key][slot], time: value },
+                              [slot]: { ...prev[envDay][group.key][slot], status: value },
                             },
                           },
                         }))
                       }
-                      placeholder="Time / entry"
+                      colorByValue={ENVIRONMENTAL_STATUS_COLORS}
                     />
                     <TextInput
                       style={styles.input}
@@ -1321,6 +1869,26 @@ export default function BatchingWeeklyInspectionScreen({ route, navigation }) {
                       }
                       placeholder="Initials"
                     />
+                    {group.key !== "F" && envDailyLog[envDay][group.key][slot].status === "unsatisfactory" ? (
+                      <TextInput
+                        style={styles.input}
+                        value={envDailyLog[envDay][group.key][slot].comment || ""}
+                        onChangeText={(value) =>
+                          setEnvDailyLog((prev) => ({
+                            ...prev,
+                            [envDay]: {
+                              ...prev[envDay],
+                              [group.key]: {
+                                ...prev[envDay][group.key],
+                                [slot]: { ...prev[envDay][group.key][slot], comment: value },
+                              },
+                            },
+                          }))
+                        }
+                        placeholder="Comment (required for Unsatisfactory)"
+                        multiline
+                      />
+                    ) : null}
                   </View>
                 ))
               )}
@@ -1328,47 +1896,14 @@ export default function BatchingWeeklyInspectionScreen({ route, navigation }) {
           ))}
         </View>
 
-        <View style={styles.sectionCard}>
-          <Text style={styles.sectionTitle}>Powder Deliveries</Text>
-          <SectionPills options={BATCHING_WEEK_DAYS} selected={envDay} onSelect={setEnvDay} />
-          <TouchableOpacity style={styles.addButton} onPress={() => addPowderDelivery(envDay)}>
-            <Text style={styles.addButtonText}>Add Delivery</Text>
-          </TouchableOpacity>
-          {(powderDeliveries[envDay] || []).length === 0 ? (
-            <Text style={styles.helper}>No powder deliveries added for {envDay}.</Text>
-          ) : (
-            powderDeliveries[envDay].map((entry, index) => (
-              <View key={`${envDay}-${index}`} style={styles.deliveryCard}>
-                <Text style={styles.dayHeading}>Delivery {index + 1}</Text>
-                <TextInput
-                  style={styles.input}
-                  value={entry.start}
-                  onChangeText={(value) => updatePowderDelivery(envDay, index, "start", value)}
-                  placeholder="Start time"
-                />
-                <TextInput
-                  style={styles.input}
-                  value={entry.finish}
-                  onChangeText={(value) => updatePowderDelivery(envDay, index, "finish", value)}
-                  placeholder="Finish time"
-                />
-                <TextInput
-                  style={styles.input}
-                  value={entry.initials}
-                  onChangeText={(value) => updatePowderDelivery(envDay, index, "initials", value)}
-                  placeholder="Initials"
-                />
-                <TouchableOpacity onPress={() => removePowderDelivery(envDay, index)}>
-                  <Text style={styles.removeText}>Remove delivery</Text>
-                </TouchableOpacity>
-              </View>
-            ))
-          )}
-        </View>
+        {renderPowderDeliveries()}
 
         <View style={styles.sectionCard}>
           <Text style={styles.sectionTitle}>Visual Assessment Of Emissions To Air</Text>
-          <SectionPills options={BATCHING_WEEK_DAYS} selected={envDay} onSelect={setEnvDay} />
+          <Text style={styles.helper}>
+            Visual Assessment of Emissions to Air: 1 - None, 2 - Minor, 3 - Serious, 4 - Major.
+          </Text>
+          <SectionPills options={operationalWeekDays} selected={envDay} onSelect={setEnvDay} />
           {areas.map((area) => (
             <View key={area} style={styles.taskCard}>
               <Text style={styles.taskLabel}>{area}</Text>
@@ -1414,7 +1949,11 @@ export default function BatchingWeeklyInspectionScreen({ route, navigation }) {
       <>
         <View style={styles.sectionCard}>
           <Text style={styles.sectionTitle}>Daily Quality Checks</Text>
-          <SectionPills options={BATCHING_WORK_DAYS} selected={qualityDay} onSelect={setQualityDay} />
+          {operationalWorkDays.length === 0 ? (
+            <Text style={styles.helper}>Plant not operational Monday to Friday. No daily quality checks required.</Text>
+          ) : (
+            <>
+          <SectionPills options={operationalWorkDays} selected={qualityDay} onSelect={setQualityDay} />
           <TouchableOpacity style={styles.addButton} onPress={() => markAllQualityTasksComplete(qualityDay)}>
             <Text style={styles.addButtonText}>Mark all as complete</Text>
           </TouchableOpacity>
@@ -1435,6 +1974,8 @@ export default function BatchingWeeklyInspectionScreen({ route, navigation }) {
               />
             </View>
           ))}
+            </>
+          )}
         </View>
 
         {BATCHING_INSPECTION_CONFIG.sheets[2].weeklySections.map((section) =>
@@ -1477,7 +2018,7 @@ export default function BatchingWeeklyInspectionScreen({ route, navigation }) {
           <View style={styles.contractPickerCard}>
             <Text style={styles.modalTitle}>Select Plant</Text>
             <ScrollView style={styles.contractPickerList}>
-              {BATCHING_PLANT_OPTIONS.map((option) => {
+              {plantOptions.map((option) => {
                 const selected = option === plantName;
                 return (
                   <TouchableOpacity
@@ -1597,14 +2138,33 @@ export default function BatchingWeeklyInspectionScreen({ route, navigation }) {
       </View>
 
       <Modal
-        visible={weeklyModal.visible}
+        visible={weeklyModal.visible && !weeklySubModalOpen}
         transparent
-        animationType="fade"
+        animationType="none"
         onRequestClose={() => setWeeklyModal({ visible: false, sheetKey: "", sectionKey: "", task: "", values: {} })}
       >
         <View style={styles.modalBackdrop}>
           <View style={styles.modalCard}>
             <Text style={styles.modalTitle}>{weeklyModal.task || "Weekly Check"}</Text>
+            {weeklyModal.groupTasks?.length ? (
+              <Text style={styles.helper}>{weeklyModal.groupTasks.join("\n")}</Text>
+            ) : null}
+            <TouchableOpacity
+              style={styles.naActionButton}
+              onPress={saveWeeklyNotApplicable}
+              accessibilityRole="button"
+              accessibilityLabel={
+                weeklyModal.groupTasks?.length
+                  ? "Mark all selected checks as not applicable"
+                  : "Mark check as not applicable"
+              }
+            >
+              <Text style={styles.naActionButtonText}>
+                {weeklyModal.groupTasks?.length
+                  ? "Mark selected checks as N/A"
+                  : "Mark check as N/A"}
+              </Text>
+            </TouchableOpacity>
             <TouchableOpacity style={styles.selectorButton} onPress={() => openTeamMemberPicker("weekly_checked_by")}>
               <Text style={weeklyModal.values.checked_by ? styles.selectorText : styles.selectorPlaceholder}>
                 {weeklyModal.values.checked_by || "Select checked by"}
@@ -1613,25 +2173,31 @@ export default function BatchingWeeklyInspectionScreen({ route, navigation }) {
             <SectionPills options={BATCHING_WEEK_DAYS} selected={weeklyModal.values.day || ""} onSelect={(value) =>
               setWeeklyModal((prev) => ({ ...prev, values: { ...prev.values, day: value } }))
             } />
-            <TextInput
-              style={styles.input}
-              value={weeklyModal.values.time || ""}
-              onChangeText={(value) =>
-                setWeeklyModal((prev) => ({ ...prev, values: { ...prev.values, time: value } }))
-              }
-              placeholder="Time (if applicable)"
-            />
+            <Text style={styles.fieldLabel}>Time</Text>
+            <TouchableOpacity
+              style={styles.selectorButton}
+              onPress={() => {
+                setTimePickerTarget(null);
+                setTimePickerVisible(true);
+              }}
+            >
+              <Text style={weeklyModal.values.time ? styles.selectorText : styles.selectorPlaceholder}>
+                {weeklyModal.values.time || "Select time"}
+              </Text>
+            </TouchableOpacity>
             <View style={styles.inlineActionRow}>
               <TouchableOpacity style={styles.signatureButton} onPress={openWeeklySignature}>
                 <Text style={styles.signatureButtonText}>
                   {weeklyModal.values.operator_signature ? "Edit signature" : "Click to sign"}
                 </Text>
               </TouchableOpacity>
-              <TouchableOpacity style={styles.secondaryActionButton} onPress={openWeeklyDefect}>
-                <Text style={styles.secondaryActionButtonText}>
-                  {weeklyModal.values.defect_reported ? "Edit defect report" : "Report defect"}
-                </Text>
-              </TouchableOpacity>
+              {weeklyModal.groupTasks?.length ? null : (
+                <TouchableOpacity style={styles.secondaryActionButton} onPress={openWeeklyDefect}>
+                  <Text style={styles.secondaryActionButtonText}>
+                    {weeklyModal.values.defect_reported ? "Edit defect report" : "Report defect"}
+                  </Text>
+                </TouchableOpacity>
+              )}
             </View>
             {weeklyModal.values.operator_signature ? (
               <Text style={styles.completedMeta}>Operator signature captured</Text>
@@ -1650,6 +2216,48 @@ export default function BatchingWeeklyInspectionScreen({ route, navigation }) {
                 <Text style={styles.buttonText}>Save</Text>
               </TouchableOpacity>
             </View>
+          </View>
+        </View>
+      </Modal>
+
+      <Modal
+        visible={timePickerVisible}
+        transparent
+        animationType="none"
+        onRequestClose={closeTimePicker}
+      >
+        <View style={styles.modalBackdrop}>
+          <View style={styles.contractPickerCard}>
+            <Text style={styles.modalTitle}>Select time</Text>
+            <ScrollView ref={timePickerScrollRef} style={styles.contractPickerList}>
+              {QUARTER_HOUR_OPTIONS.map((option) => {
+                const selected = option === pickerCurrentValue;
+                const scrollTarget = option === (pickerCurrentValue || getCurrentTimeValue());
+                return (
+                  <TouchableOpacity
+                    key={option}
+                    style={[styles.contractPickerOption, selected && styles.contractPickerOptionSelected]}
+                    onLayout={(event) => {
+                      if (scrollTarget) {
+                        timePickerScrollRef.current?.scrollTo({
+                          y: Math.max(event.nativeEvent.layout.y - 80, 0),
+                          animated: false,
+                        });
+                      }
+                    }}
+                    onPress={() => selectPickerTime(option)}
+                  >
+                    <Text style={styles.contractPickerOptionText}>{option}</Text>
+                  </TouchableOpacity>
+                );
+              })}
+            </ScrollView>
+            <TouchableOpacity
+              style={[styles.buttonInline, styles.buttonGhost]}
+              onPress={closeTimePicker}
+            >
+              <Text style={styles.buttonGhostText}>Close</Text>
+            </TouchableOpacity>
           </View>
         </View>
       </Modal>
@@ -1993,6 +2601,21 @@ const styles = StyleSheet.create({
   secondaryActionButtonText: {
     color: "#111827",
     fontWeight: "600",
+  },
+  naActionButton: {
+    borderWidth: 1,
+    borderColor: "#1d4ed8",
+    borderRadius: 8,
+    backgroundColor: "#eff6ff",
+    paddingVertical: 12,
+    paddingHorizontal: 10,
+    alignItems: "center",
+  },
+  naActionButtonText: {
+    color: "#1e3a8a",
+    fontSize: 16,
+    fontWeight: "700",
+    textAlign: "center",
   },
   deliveryCard: {
     borderWidth: 1,
