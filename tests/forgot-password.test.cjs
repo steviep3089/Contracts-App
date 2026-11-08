@@ -296,7 +296,7 @@ test("delayed login listener does not replace the verification screen and is uns
       },
     } }, isRefreshTokenError: () => false },
     "../services/passwordRecovery": s.recovery,
-    "@react-native-async-storage/async-storage": { getItem: async () => null },
+    "@react-native-async-storage/async-storage": { getItem: async () => null, removeItem: async () => {} },
     "../assets/contracting-app.png": 1,
   }, { navigation: { isFocused: () => focused, replace: (name) => calls.push(name) } });
   ui.render(true);
@@ -366,6 +366,59 @@ test("root listener preserves code entry while still handling invites and real r
   timers.shift()();
   assert.deepEqual(calls, ["ResetPassword"]);
   assert.equal(s.recovery.canUseExistingPasswordSetupSession(session.user), true);
+});
+
+test("remember email clears legacy passwords and never stores temporary credentials", async () => {
+  for (const remember of [true, false]) {
+    const stored = new Map([["savedEmail", "old@example.com"], ["savedPassword", "legacy-secret"]]);
+    const writes = [];
+    const navigationCalls = [];
+    const ui = screen("screens/LoginScreen.js", {
+      "../supabase": { supabase: { auth: {
+        getSession: async () => ({ data: { session: null }, error: null }),
+        onAuthStateChange: () => ({ data: { subscription: { unsubscribe() {} } } }),
+        signInWithPassword: async () => ({ error: null }),
+        getUser: async () => ({ data: { user: { id: "new-user", user_metadata: { force_password_change: true } } } }),
+      } }, isRefreshTokenError: () => false },
+      "../services/passwordRecovery": setup().recovery,
+      "@react-native-async-storage/async-storage": {
+        getItem: async (key) => stored.get(key) || null,
+        setItem: async (key, value) => { writes.push(key); stored.set(key, value); },
+        removeItem: async (key) => { stored.delete(key); },
+      },
+      "../assets/contracting-app.png": 1,
+    }, { navigation: { isFocused: () => true, replace: (name) => navigationCalls.push(name) } });
+    ui.render(true);
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(stored.has("savedPassword"), false);
+    let tree = ui.render();
+    assert.equal(find(tree, (n) => n.props.placeholder === "Email").props.value, "old@example.com");
+    assert.equal(find(tree, (n) => n.props.placeholder === "Password").props.value, "");
+    find(tree, (n) => n.props.placeholder === "Password").props.onChangeText("temporary-secret");
+    if (!remember) button(ui.render(), "Remember email").props.onPress();
+    await button(ui.render(), "Sign In").props.onPress();
+    assert.deepEqual(navigationCalls, ["ResetPassword"]);
+    assert.equal(stored.has("savedPassword"), false);
+    assert.equal(stored.has("savedEmail"), remember);
+    assert.equal(writes.includes("savedPassword"), false);
+    ui.unmount();
+  }
+});
+
+test("remembered login storage failures are reported", async () => {
+  const ui = screen("screens/LoginScreen.js", {
+    "../supabase": { supabase: { auth: {
+      getSession: async () => ({ data: { session: null }, error: null }),
+      onAuthStateChange: () => ({ data: { subscription: { unsubscribe() {} } } }),
+    } }, isRefreshTokenError: () => false },
+    "../services/passwordRecovery": setup().recovery,
+    "@react-native-async-storage/async-storage": { removeItem: async () => { throw new Error("storage failure"); } },
+    "../assets/contracting-app.png": 1,
+  }, { navigation: { isFocused: () => true } });
+  ui.render(true);
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.match(ui.alerts[0][1], /could not remove/i);
+  ui.unmount();
 });
 
 test("password screen validates before completion and returns to login after reset", async () => {

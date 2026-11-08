@@ -71,23 +71,24 @@ export default function LoginScreen({ navigation }) {
   }
 
   async function loadRememberedLogin() {
-    const savedEmail = await AsyncStorage.getItem("savedEmail");
-    const savedPassword = await AsyncStorage.getItem("savedPassword");
-
-    if (savedEmail && savedPassword) {
-      setEmail(savedEmail);
-      setPassword(savedPassword);
-      setRemember(true);
+    try {
+      await AsyncStorage.removeItem("savedPassword");
+      const savedEmail = await AsyncStorage.getItem("savedEmail");
+      if (savedEmail) {
+        setEmail(savedEmail);
+        setRemember(true);
+      }
+    } catch {
+      Alert.alert("Saved login unavailable", "Could not remove the previously saved password or load the saved email.");
     }
   }
 
   async function rememberLogin() {
+    await AsyncStorage.removeItem("savedPassword");
     if (remember) {
-      await AsyncStorage.setItem("savedEmail", email);
-      await AsyncStorage.setItem("savedPassword", password);
+      await AsyncStorage.setItem("savedEmail", email.trim());
     } else {
       await AsyncStorage.removeItem("savedEmail");
-      await AsyncStorage.removeItem("savedPassword");
     }
   }
 
@@ -99,7 +100,11 @@ export default function LoginScreen({ navigation }) {
       if (error) {
         alert(error.message);
       } else {
-        await rememberLogin();
+        try {
+          await rememberLogin();
+        } catch {
+          Alert.alert("Saved login unavailable", "Could not update saved login information or remove the previously saved password.");
+        }
         const { data: userData } = await supabase.auth.getUser();
         if (navigation.isFocused()) {
           navigation.replace(canUseExistingPasswordSetupSession(userData?.user) ? "ResetPassword" : "Home");
@@ -177,7 +182,7 @@ export default function LoginScreen({ navigation }) {
 
         <TouchableOpacity style={styles.rememberRow} onPress={() => setRemember(!remember)}>
           <View style={[styles.checkbox, remember && styles.checkboxChecked]} />
-          <Text style={styles.rememberText}>Remember me</Text>
+          <Text style={styles.rememberText}>Remember email</Text>
         </TouchableOpacity>
 
         <TouchableOpacity onPress={forgotPassword} disabled={resetPending}>
