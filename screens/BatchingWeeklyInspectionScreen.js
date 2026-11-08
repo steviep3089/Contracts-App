@@ -5,6 +5,7 @@ import SignatureScreen from "react-native-signature-canvas";
 import { supabase } from "../supabase";
 import { enqueueOutboxItem } from "../services/outboxQueue";
 import { syncChecklistSubmission } from "../services/checklistSync";
+import { submitChecklistDurably } from "../services/outboxSync";
 import {
   BATCHING_INSPECTION_CONFIG,
   BATCHING_STATUS_OPTIONS,
@@ -1481,7 +1482,7 @@ export default function BatchingWeeklyInspectionScreen({ route, navigation }) {
         return;
       }
 
-      const result = await syncChecklistSubmission({
+      const result = await submitChecklistDurably({
         checklistPayload: {
           ...checklistPayload,
           status: "submitted",
@@ -1498,6 +1499,10 @@ export default function BatchingWeeklyInspectionScreen({ route, navigation }) {
         { text: "OK", onPress: () => navigation.goBack() },
       ]);
     } catch (error) {
+      if (error.outboxSaved) {
+        Alert.alert("Saved To Outbox", "Submission is saved on this device. Check the Outbox for its status.", [{ text: "OK", onPress: () => navigation.goBack() }]);
+        return;
+      }
       const userId = await getCurrentUserId();
       if (userId && isTransportError(error)) {
         await enqueueSubmission({

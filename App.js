@@ -1,8 +1,10 @@
-import React, { useEffect, useRef } from "react";
+import React, { useEffect, useRef, useState } from "react";
 import { NavigationContainer } from "@react-navigation/native";
 import { createNativeStackNavigator } from "@react-navigation/native-stack";
+import { SafeAreaProvider } from "react-native-safe-area-context";
 import * as Linking from "expo-linking";
 import { supabase } from "./supabase";
+import MaintenanceGate from "./MaintenanceGate";
 
 import SplashScreen from "./screens/SplashScreen";
 import LoginScreen from "./screens/LoginScreen";
@@ -31,6 +33,7 @@ const linking = {
 
 export default function App() {
   const navigationRef = useRef();
+  const [routeName, setRouteName] = useState(null);
 
   useEffect(() => {
     const needsPasswordSetup = (user) =>
@@ -94,7 +97,9 @@ export default function App() {
   }, []);
 
   return (
-    <NavigationContainer ref={navigationRef} linking={linking}>
+    <SafeAreaProvider>
+    <MaintenanceGate routeName={routeName} navigationRef={navigationRef}>
+    <NavigationContainer ref={navigationRef} linking={linking} onReady={() => setRouteName(navigationRef.current?.getCurrentRoute()?.name)} onStateChange={() => setRouteName(navigationRef.current?.getCurrentRoute()?.name)}>
         <Stack.Navigator initialRouteName="Splash" screenOptions={{ headerTitleAlign: "center" }}>
           <Stack.Screen name="Splash" component={SplashScreen} options={{ headerShown: false }} />
           <Stack.Screen name="Login" component={LoginScreen} options={{ title: "Login" }} />
@@ -138,5 +143,7 @@ export default function App() {
         />
       </Stack.Navigator>
     </NavigationContainer>
+    </MaintenanceGate>
+    </SafeAreaProvider>
   );
 }

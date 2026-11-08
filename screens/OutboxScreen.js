@@ -12,10 +12,9 @@ import NetInfo from "@react-native-community/netinfo";
 import { useIsFocused } from "@react-navigation/native";
 import {
   getOutboxItems,
-  removeOutboxItem,
-  updateOutboxItem,
 } from "../services/outboxQueue";
-import { syncOutboxItem } from "../services/outboxSync";
+import { processOutboxItem } from "../services/outboxSync";
+import { isSyncPaused } from "../services/maintenanceStatus";
 
 function formatTimestamp(isoText) {
   if (!isoText) return "";
@@ -77,24 +76,11 @@ export default function OutboxScreen() {
 
     setRetryingId(item.id);
     try {
-      await updateOutboxItem(item.id, (prev) => ({
-        ...prev,
-        status: "syncing",
-        lastError: "",
-      }));
-
-      await syncOutboxItem(item);
-      await removeOutboxItem(item.id);
+      await processOutboxItem(item);
       await loadItems();
     } catch (error) {
-      await updateOutboxItem(item.id, (prev) => ({
-        ...prev,
-        status: "failed",
-        retries: Number(prev.retries || 0) + 1,
-        lastError: String(error?.message || "Retry failed"),
-      }));
       await loadItems();
-      Alert.alert("Retry Failed", String(error?.message || "Unknown error"));
+      Alert.alert(isSyncPaused(error) ? "Sync Paused" : "Retry Failed", String(error?.message || "Unknown error"));
     } finally {
       setRetryingId("");
     }
@@ -111,22 +97,13 @@ export default function OutboxScreen() {
     try {
       const list = await getOutboxItems();
       for (const item of list) {
-        await updateOutboxItem(item.id, (prev) => ({
-          ...prev,
-          status: "syncing",
-          lastError: "",
-        }));
-
         try {
-          await syncOutboxItem(item);
-          await removeOutboxItem(item.id);
+          await processOutboxItem(item);
         } catch (error) {
-          await updateOutboxItem(item.id, (prev) => ({
-            ...prev,
-            status: "failed",
-            retries: Number(prev.retries || 0) + 1,
-            lastError: String(error?.message || "Retry failed"),
-          }));
+          if (isSyncPaused(error)) {
+            Alert.alert("Sync Paused", error.message);
+            break;
+          }
         }
       }
     } finally {

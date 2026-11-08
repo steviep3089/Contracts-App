@@ -6,13 +6,15 @@ import SignatureScreen from "react-native-signature-canvas";
 import NetInfo from "@react-native-community/netinfo";
 import { useIsFocused } from "@react-navigation/native";
 import { supabase } from "../supabase";
-import { enqueueOutboxItem, getOutboxCount, getOutboxItems, removeOutboxItem, updateOutboxItem } from "../services/outboxQueue";
-import { isTransportError, syncNearMissSubmission, syncOutboxItem, syncSelfCertSubmission } from "../services/outboxSync";
+import { enqueueOutboxItem, getOutboxCount, getOutboxItems } from "../services/outboxQueue";
+import { isTransportError, syncNearMissSubmission, processOutboxItem, syncSelfCertSubmission } from "../services/outboxSync";
+import { isSyncPaused, subscribeMaintenance } from "../services/maintenanceStatus";
 
 export default function HomeScreen({ navigation }) {
   const [outboxCount, setOutboxCount] = useState(0);
   const [attentionCount, setAttentionCount] = useState(0);
   const [isSyncing, setIsSyncing] = useState(false);
+  const syncingRef = useRef(false);
   const [nearMissVisible, setNearMissVisible] = useState(false);
   const [sitePickerOpen, setSitePickerOpen] = useState(false);
   const [sites, setSites] = useState([]);
@@ -86,40 +88,29 @@ export default function HomeScreen({ navigation }) {
   }, []);
 
   const processOutbox = useCallback(async () => {
-    if (isSyncing) return;
+    if (syncingRef.current) return;
+    syncingRef.current = true;
 
-    const netState = await NetInfo.fetch();
-    if (!netState.isConnected || !netState.isInternetReachable) {
-      return;
-    }
-
-    setIsSyncing(true);
     try {
+      const netState = await NetInfo.fetch();
+      if (!netState.isConnected || !netState.isInternetReachable) return;
+      setIsSyncing(true);
       const items = await getOutboxItems();
       for (const item of items) {
-        await updateOutboxItem(item.id, (prev) => ({
-          ...prev,
-          status: "syncing",
-          lastError: "",
-        }));
-
         try {
-          await syncOutboxItem(item);
-          await removeOutboxItem(item.id);
+          await processOutboxItem(item);
         } catch (error) {
-          await updateOutboxItem(item.id, (prev) => ({
-            ...prev,
-            status: "failed",
-            retries: Number(prev.retries || 0) + 1,
-            lastError: String(error?.message || "Sync failed"),
-          }));
+          if (isSyncPaused(error)) break;
         }
       }
+    } catch (error) {
+      Alert.alert("Outbox Error", String(error?.message || "Unable to process the outbox."));
     } finally {
+      syncingRef.current = false;
       setIsSyncing(false);
       await refreshOutboxCount();
     }
-  }, [isSyncing, refreshOutboxCount]);
+  }, [refreshOutboxCount]);
 
   useEffect(() => {
     if (!isFocused) return;
@@ -136,6 +127,15 @@ export default function HomeScreen({ navigation }) {
     });
 
     return () => unsub();
+  }, [processOutbox]);
+
+  useEffect(() => {
+    let wasPaused = true;
+    return subscribeMaintenance((state) => {
+      const paused = !state.status || !!state.error || state.status.enabled;
+      if (wasPaused && !paused) processOutbox();
+      wasPaused = paused;
+    });
   }, [processOutbox]);
 
   async function handleSignOut() {

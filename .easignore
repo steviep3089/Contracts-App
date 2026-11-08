@@ -1,0 +1,21 @@
+# Existing .gitignore rules
+node_modules/
+.expo/
+dist/
+.env
+.env.*
+*.log
+
+# Local Supabase CLI files
+/supabase/
+
+# Generated build and test artifacts
+/.expo-shared/
+/web-build/
+/coverage/
+/test-results/
+/playwright-report/
+/*.apk
+/*.aab
+/*.apks
+/*.ipa

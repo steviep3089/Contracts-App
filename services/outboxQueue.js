@@ -1,25 +1,32 @@
 import AsyncStorage from "@react-native-async-storage/async-storage";
 
 const OUTBOX_STORAGE_KEY = "contracts_app_outbox_v1";
+let mutation = Promise.resolve();
 
 export async function getOutboxItems() {
-  try {
-    const raw = await AsyncStorage.getItem(OUTBOX_STORAGE_KEY);
-    if (!raw) return [];
-    const parsed = JSON.parse(raw);
-    return Array.isArray(parsed) ? parsed : [];
-  } catch {
-    return [];
-  }
+  const raw = await AsyncStorage.getItem(OUTBOX_STORAGE_KEY);
+  if (!raw) return [];
+  const parsed = JSON.parse(raw);
+  if (!Array.isArray(parsed)) throw new Error("The outbox data is invalid.");
+  return parsed;
 }
 
 async function saveOutboxItems(items) {
   await AsyncStorage.setItem(OUTBOX_STORAGE_KEY, JSON.stringify(items));
 }
 
-export async function enqueueOutboxItem(input, typeOverride = "") {
-  const items = await getOutboxItems();
+function mutateOutbox(change) {
+  const next = mutation.then(async () => {
+    const items = await getOutboxItems();
+    const result = change(items);
+    await saveOutboxItems(result.items);
+    return result.value;
+  });
+  mutation = next.catch(() => {});
+  return next;
+}
 
+export async function enqueueOutboxItem(input, typeOverride = "") {
   let type = "checklist-submit";
   let data = input;
   let meta = {};
@@ -49,28 +56,25 @@ export async function enqueueOutboxItem(input, typeOverride = "") {
     ...meta,
   };
 
-  const next = [item, ...items];
-  await saveOutboxItems(next);
-  return item;
+  return mutateOutbox((items) => ({ items: [item, ...items], value: item }));
 }
 
 export async function removeOutboxItem(id) {
-  const items = await getOutboxItems();
-  const next = items.filter((item) => item.id !== id);
-  await saveOutboxItems(next);
+  return mutateOutbox((items) => ({ items: items.filter((item) => item.id !== id) }));
 }
 
 export async function updateOutboxItem(id, updater) {
-  const items = await getOutboxItems();
-  const next = items.map((item) => {
-    if (item.id !== id) return item;
-    const updated = typeof updater === "function" ? updater(item) : { ...item, ...updater };
-    return {
-      ...updated,
-      updatedAt: new Date().toISOString(),
-    };
+  return mutateOutbox((items) => {
+    let found = false;
+    const next = items.map((item) => {
+      if (item.id !== id) return item;
+      found = true;
+      const updated = typeof updater === "function" ? updater(item) : { ...item, ...updater };
+      return { ...updated, updatedAt: new Date().toISOString() };
+    });
+    if (!found) throw new Error("Outbox item no longer exists.");
+    return { items: next };
   });
-  await saveOutboxItems(next);
 }
 
 export async function getOutboxCount() {

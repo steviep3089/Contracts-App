@@ -6,6 +6,7 @@ import * as ImagePicker from "expo-image-picker";
 import { supabase } from "../supabase";
 import { enqueueOutboxItem } from "../services/outboxQueue";
 import { syncChecklistSubmission } from "../services/checklistSync";
+import { submitChecklistDurably } from "../services/outboxSync";
 import BatchingWeeklyInspectionScreen, { isBatchingWeeklyInspectionForm } from "./BatchingWeeklyInspectionScreen";
 
 const STATUS_OPTIONS = ["X", "Y", "N/A"];
@@ -929,7 +930,7 @@ export default function FillFormScreen({ route, navigation }) {
         return;
       }
 
-      const result = await syncChecklistSubmission({
+      const result = await submitChecklistDurably({
         checklistPayload: {
           ...checklistPayload,
           status: "submitted",
@@ -952,6 +953,11 @@ export default function FillFormScreen({ route, navigation }) {
         Alert.alert("Routing Note", result.routingWarning);
       }
     } catch (error) {
+      if (error.outboxSaved) {
+        setDefectReviewVisible(false);
+        Alert.alert("Saved To Outbox", "Submission is saved on this device. Check the Outbox for its status.", [{ text: "OK", onPress: () => navigation.goBack() }]);
+        return;
+      }
       const userId = await getCurrentUserId();
       if (userId && isTransportError(error)) {
         await enqueueSubmission({
@@ -1067,7 +1073,7 @@ export default function FillFormScreen({ route, navigation }) {
         return;
       }
 
-      const result = await syncChecklistSubmission({
+      const result = await submitChecklistDurably({
         checklistPayload: {
           ...checklistPayload,
           status: "submitted",
@@ -1080,6 +1086,10 @@ export default function FillFormScreen({ route, navigation }) {
       }
       showSuccess();
     } catch (err) {
+      if (err.outboxSaved) {
+        Alert.alert("Saved To Outbox", "Submission is saved on this device. Check the Outbox for its status.", [{ text: "OK", onPress: () => navigation.goBack() }]);
+        return;
+      }
       const userId = await getCurrentUserId();
       if (userId && isTransportError(err)) {
         await enqueueSubmission({
@@ -1780,5 +1790,4 @@ const styles = StyleSheet.create({
     fontSize: 12,
   },
 });
-
 

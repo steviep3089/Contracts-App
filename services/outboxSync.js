@@ -1,5 +1,9 @@
 import { supabase } from "../supabase";
 import { syncChecklistSubmission } from "./checklistSync";
+import { enqueueOutboxItem, getOutboxItems, removeOutboxItem, updateOutboxItem } from "./outboxQueue";
+import { isSyncPaused, requireSyncAllowed, SyncPausedError } from "./maintenanceStatus";
+
+const activeItems = new Map();
 
 export function isTransportError(error) {
   const msg = String(error?.message || "").toLowerCase();
@@ -13,6 +17,7 @@ export function isTransportError(error) {
 }
 
 async function requireActiveSession() {
+  await requireSyncAllowed();
   const {
     data: { session },
   } = await supabase.auth.getSession();
@@ -31,6 +36,7 @@ export async function syncNearMissSubmission({ payload }) {
   });
 
   if (error || data?.success === false) {
+    if (isSyncPaused(error) || isSyncPaused({ message: data?.error })) throw new SyncPausedError("Submission paused because the service is unavailable.");
     throw new Error(error?.message || data?.error || "Could not submit near miss report.");
   }
 
@@ -44,6 +50,7 @@ export async function syncSelfCertSubmission({ payload }) {
   });
 
   if (error || data?.success === false) {
+    if (isSyncPaused(error) || isSyncPaused({ message: data?.error })) throw new SyncPausedError("Submission paused because the service is unavailable.");
     throw new Error(error?.message || data?.error || "Could not submit self cert form.");
   }
 
@@ -57,6 +64,7 @@ export async function syncSelfCertApproval({ payload }) {
   });
 
   if (error || data?.success === false) {
+    if (isSyncPaused(error) || isSyncPaused({ message: data?.error })) throw new SyncPausedError("Approval paused because the service is unavailable.");
     throw new Error(error?.message || data?.error || "Could not approve self cert.");
   }
 
@@ -70,17 +78,25 @@ export async function syncTimesheetApproval({ payload }) {
   });
 
   if (error || data?.success === false) {
+    if (isSyncPaused(error) || isSyncPaused({ message: data?.error })) throw new SyncPausedError("Approval paused because the service is unavailable.");
     throw new Error(error?.message || data?.error || "Could not approve timesheet.");
   }
 
   return data;
 }
 
-export async function syncOutboxItem(item) {
+async function syncOutboxItem(item) {
+  await requireSyncAllowed();
   const type = String(item?.type || "checklist-submit");
 
   if (type === "checklist-submit") {
-    return syncChecklistSubmission(item?.data || {});
+    return syncChecklistSubmission({
+      ...(item?.data || {}),
+      progress: item.progress || {},
+      onProgress: (progress) => updateOutboxItem(item.id, (previous) => ({
+        ...previous, progress: { ...previous.progress, ...progress },
+      })),
+    });
   }
 
   if (type === "near-miss-submit") {
@@ -100,4 +116,44 @@ export async function syncOutboxItem(item) {
   }
 
   throw new Error(`Unsupported outbox item type: ${type}`);
+}
+
+export function processOutboxItem(item) {
+  if (activeItems.has(item.id)) return activeItems.get(item.id);
+  const operation = (async () => {
+    try {
+      await requireSyncAllowed();
+      const current = (await getOutboxItems()).find((entry) => entry.id === item.id);
+      if (!current) return { skipped: true };
+      await updateOutboxItem(item.id, (previous) => ({ ...previous, status: "syncing" }));
+      try {
+        const result = await syncOutboxItem(current);
+        await removeOutboxItem(item.id);
+        return { result };
+      } catch (error) {
+        const paused = isSyncPaused(error);
+        await updateOutboxItem(item.id, (previous) => ({
+          ...previous,
+          status: paused ? "queued" : "failed",
+          retries: Number(previous.retries || 0) + (paused ? 0 : 1),
+          lastError: paused ? previous.lastError : String(error?.message || "Sync failed"),
+        }));
+        throw error;
+      }
+    } finally {
+      activeItems.delete(item.id);
+    }
+  })();
+  activeItems.set(item.id, operation);
+  return operation;
+}
+
+export async function submitChecklistDurably(data) {
+  const item = await enqueueOutboxItem(data);
+  try {
+    return (await processOutboxItem(item)).result;
+  } catch (error) {
+    error.outboxSaved = true;
+    throw error;
+  }
 }
