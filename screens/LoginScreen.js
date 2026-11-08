@@ -10,17 +10,19 @@ import {
   KeyboardAvoidingView,
   Platform,
   ScrollView,
-  BackHandler,
   Alert,
 } from "react-native";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { supabase, clearPersistedSupabaseSession, isRefreshTokenError } from "../supabase";
+import { canUseExistingPasswordSetupSession, isRecoveryRequestInProgress, setRecoveryRequestInProgress } from "../services/passwordRecovery";
 
 export default function LoginScreen({ navigation }) {
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [remember, setRemember] = useState(false);
   const [showPassword, setShowPassword] = useState(false);
+  const [resetPending, setResetPending] = useState(false);
+  const authBusy = useRef(false);
 
   const logoOpacity = useRef(new Animated.Value(0)).current;
 
@@ -32,7 +34,23 @@ export default function LoginScreen({ navigation }) {
     }).start();
 
     loadRememberedLogin();
-    checkForRecovery();
+    let active = true;
+    resetStaleSessionIfNeeded();
+    const { data } = supabase.auth.onAuthStateChange((event, session) => {
+      if (event === "PASSWORD_RECOVERY") return;
+      if (event === "SIGNED_IN") {
+        supabase.auth.getUser().then(({ data: userData }) => {
+          if (active && !isRecoveryRequestInProgress() && navigation.isFocused() &&
+              canUseExistingPasswordSetupSession(userData?.user || session?.user)) {
+            navigation.replace("ResetPassword");
+          }
+        });
+      }
+    });
+    return () => {
+      active = false;
+      data.subscription.unsubscribe();
+    };
   }, []);
 
   async function resetStaleSessionIfNeeded() {
@@ -50,69 +68,6 @@ export default function LoginScreen({ navigation }) {
       }
       return false;
     }
-  }
-
-  async function checkForRecovery() {
-    const needsPasswordSetup = (user) =>
-      !!(
-        user &&
-        (
-          user.recovery_sent_at ||
-          (user.invited_at && user.user_metadata?.password_set !== true) ||
-          user.user_metadata?.force_password_change === true ||
-          user.user_metadata?.password_set === false
-        )
-      );
-
-    const hadStaleSession = await resetStaleSessionIfNeeded();
-    if (hadStaleSession) {
-      return;
-    }
-
-    const {
-      data: { session },
-      error: sessionError,
-    } = await supabase.auth.getSession();
-
-    if (sessionError && isRefreshTokenError(sessionError)) {
-      await clearPersistedSupabaseSession();
-      return;
-    }
-
-    const { data: userData, error: userError } = await supabase.auth.getUser();
-    if (userError && isRefreshTokenError(userError)) {
-      await clearPersistedSupabaseSession();
-      return;
-    }
-
-    if (session?.user) {
-      const currentUser = userData?.user || session.user;
-      const isRecovery = currentUser.aud === "authenticated" && needsPasswordSetup(currentUser);
-
-      if (isRecovery) {
-        navigation.replace("ResetPassword");
-        return;
-      }
-    }
-
-    const { data } = supabase.auth.onAuthStateChange((event, newSession) => {
-      if (event === "PASSWORD_RECOVERY") {
-        navigation.replace("ResetPassword");
-        return;
-      }
-
-      if (event === "SIGNED_IN") {
-        supabase.auth.getUser().then(({ data: currentData }) => {
-          if (needsPasswordSetup(currentData?.user || newSession?.user)) {
-            navigation.replace("ResetPassword");
-          }
-        });
-      }
-    });
-
-    return () => {
-      data?.subscription?.unsubscribe();
-    };
   }
 
   async function loadRememberedLogin() {
@@ -137,26 +92,21 @@ export default function LoginScreen({ navigation }) {
   }
 
   async function signIn() {
-    const { error } = await supabase.auth.signInWithPassword({
-      email,
-      password,
-    });
-
-    if (error) {
-      alert(error.message);
-    } else {
-      await rememberLogin();
-      const { data: userData } = await supabase.auth.getUser();
-      const signedInUser = userData?.user;
-      const needsReset =
-        signedInUser &&
-        (
-          signedInUser.recovery_sent_at ||
-          (signedInUser.invited_at && signedInUser.user_metadata?.password_set !== true) ||
-          signedInUser.user_metadata?.force_password_change === true ||
-          signedInUser.user_metadata?.password_set === false
-        );
-      navigation.replace(needsReset ? "ResetPassword" : "Home");
+    if (authBusy.current) return;
+    authBusy.current = true;
+    try {
+      const { error } = await supabase.auth.signInWithPassword({ email, password });
+      if (error) {
+        alert(error.message);
+      } else {
+        await rememberLogin();
+        const { data: userData } = await supabase.auth.getUser();
+        if (navigation.isFocused()) {
+          navigation.replace(canUseExistingPasswordSetupSession(userData?.user) ? "ResetPassword" : "Home");
+        }
+      }
+    } finally {
+      authBusy.current = false;
     }
   }
 
@@ -166,27 +116,25 @@ export default function LoginScreen({ navigation }) {
       return;
     }
 
-    const { error } = await supabase.auth.resetPasswordForEmail(email, {
-      redirectTo: "contractsapp://",
-    });
-
-    if (error) {
-      alert(error.message);
-    } else {
-      Alert.alert(
-        "Email Sent",
-        "Password reset email sent. Check your email and click the link. The app will now close.",
-        [
-          {
-            text: "OK",
-            onPress: () => {
-              if (Platform.OS === "android") {
-                BackHandler.exitApp();
-              }
-            },
-          },
-        ]
-      );
+    if (authBusy.current) return;
+    authBusy.current = true;
+    setRecoveryRequestInProgress(true);
+    setResetPending(true);
+    try {
+      const cleanEmail = email.trim();
+      const { error } = await supabase.auth.resetPasswordForEmail(cleanEmail, {
+        redirectTo: "contractsapp://",
+      });
+      if (error) throw error;
+      if (navigation.isFocused()) navigation.navigate("VerifyOtp", { email: cleanEmail });
+    } catch (error) {
+      const limited = error?.status === 429 || /rate.limit|too many/i.test(error?.message || "");
+      Alert.alert("Unable to send code", limited ? "Too many requests. Please wait before trying again." :
+        error?.message || "Please check your connection and try again.");
+    } finally {
+      setResetPending(false);
+      setRecoveryRequestInProgress(false);
+      authBusy.current = false;
     }
   }
 
@@ -232,11 +180,11 @@ export default function LoginScreen({ navigation }) {
           <Text style={styles.rememberText}>Remember me</Text>
         </TouchableOpacity>
 
-        <TouchableOpacity onPress={forgotPassword}>
+        <TouchableOpacity onPress={forgotPassword} disabled={resetPending}>
           <Text style={styles.forgotText}>Forgot password?</Text>
         </TouchableOpacity>
 
-        <TouchableOpacity style={styles.button} onPress={signIn}>
+        <TouchableOpacity style={styles.button} onPress={signIn} disabled={resetPending}>
           <Text style={styles.buttonText}>Sign In</Text>
         </TouchableOpacity>
 

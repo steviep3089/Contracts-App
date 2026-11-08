@@ -124,6 +124,7 @@ test("overlay allows recovery and signed-out Super User login without granting a
   const state = { userId: "u1", status: { enabled: true, effective_scope: "master", is_super_user: false } };
   assert.equal(maintenance.shouldShowMaintenanceOverlay(state, "Home", false), true);
   assert.equal(maintenance.shouldShowMaintenanceOverlay(state, "ResetPassword", false), false);
+  assert.equal(maintenance.shouldShowMaintenanceOverlay(state, "VerifyOtp", false), false);
   assert.equal(maintenance.shouldShowMaintenanceOverlay(state, "Home", true), true);
   assert.equal(maintenance.shouldShowMaintenanceOverlay({ ...state, userId: null }, "Login", true), false);
   assert.equal(maintenance.shouldShowMaintenanceOverlay({ ...state, status: { enabled: true, is_super_user: true } }, "Home", false), false);

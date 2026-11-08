@@ -5,9 +5,11 @@ import { SafeAreaProvider } from "react-native-safe-area-context";
 import * as Linking from "expo-linking";
 import { supabase } from "./supabase";
 import MaintenanceGate from "./MaintenanceGate";
+import { isRecoveryRequestInProgress, recordLinkRecovery } from "./services/passwordRecovery";
 
 import SplashScreen from "./screens/SplashScreen";
 import LoginScreen from "./screens/LoginScreen";
+import VerifyOtpScreen from "./screens/VerifyOtpScreen";
 import ResetPasswordScreen from "./screens/ResetPasswordScreen";
 import HomeScreen from "./screens/HomeScreen";
 import ContractFormsScreen from "./screens/ContractFormsScreen";
@@ -40,7 +42,6 @@ export default function App() {
       !!(
         user &&
         (
-          user.recovery_sent_at ||
           (user.invited_at && user.user_metadata?.password_set !== true) ||
           user.user_metadata?.force_password_change === true ||
           user.user_metadata?.password_set === false
@@ -68,6 +69,7 @@ export default function App() {
 
     const { data } = supabase.auth.onAuthStateChange((event, session) => {
       if (event === "PASSWORD_RECOVERY") {
+        recordLinkRecovery(session);
         setTimeout(() => {
           if (navigationRef.current?.isReady()) {
             navigationRef.current.navigate("ResetPassword");
@@ -76,6 +78,8 @@ export default function App() {
         return;
       }
 
+      if (event === "SIGNED_OUT") recordLinkRecovery(null);
+
       if (event === "SIGNED_IN" && session?.user?.invited_at) {
         supabase.auth.getUser().then(({ data: userData }) => {
           const needsReset = needsPasswordSetup(userData?.user || session?.user);
@@ -83,7 +87,9 @@ export default function App() {
             return;
           }
           setTimeout(() => {
-            if (navigationRef.current?.isReady()) {
+            if (navigationRef.current?.isReady() && !isRecoveryRequestInProgress() &&
+                navigationRef.current.getCurrentRoute()?.name !== "VerifyOtp" &&
+                navigationRef.current.getCurrentRoute()?.name !== "ResetPassword") {
               navigationRef.current.navigate("ResetPassword");
             }
           }, 100);
@@ -103,6 +109,7 @@ export default function App() {
         <Stack.Navigator initialRouteName="Splash" screenOptions={{ headerTitleAlign: "center" }}>
           <Stack.Screen name="Splash" component={SplashScreen} options={{ headerShown: false }} />
           <Stack.Screen name="Login" component={LoginScreen} options={{ title: "Login" }} />
+          <Stack.Screen name="VerifyOtp" component={VerifyOtpScreen} options={{ title: "Verify Code" }} />
           <Stack.Screen
             name="ResetPassword"
             component={ResetPasswordScreen}

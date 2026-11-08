@@ -78,7 +78,7 @@ export function maintenanceBlocks(stateValue = state) {
 
 export function shouldShowMaintenanceOverlay(stateValue, routeName, loginRequested) {
   return maintenanceBlocks(stateValue) &&
-    routeName !== "ResetPassword" && !(!stateValue.userId && loginRequested);
+    routeName !== "ResetPassword" && routeName !== "VerifyOtp" && !(!stateValue.userId && loginRequested);
 }
 
 export class SyncPausedError extends Error {
