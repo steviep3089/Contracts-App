@@ -14,7 +14,8 @@ import {
 } from "react-native";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { supabase, clearPersistedSupabaseSession, isRefreshTokenError } from "../supabase";
-import { canUseExistingPasswordSetupSession, isRecoveryRequestInProgress, setRecoveryRequestInProgress } from "../services/passwordRecovery";
+import { canUseExistingPasswordSetupSession, isPendingInvitation, isRecoveryRequestInProgress, setRecoveryRequestInProgress } from "../services/passwordRecovery";
+import { isInvitationInProgress } from "../services/invitation";
 
 export default function LoginScreen({ navigation }) {
   const [email, setEmail] = useState("");
@@ -40,7 +41,7 @@ export default function LoginScreen({ navigation }) {
       if (event === "PASSWORD_RECOVERY") return;
       if (event === "SIGNED_IN") {
         supabase.auth.getUser().then(({ data: userData }) => {
-          if (active && !isRecoveryRequestInProgress() && navigation.isFocused() &&
+          if (active && !isRecoveryRequestInProgress() && !isInvitationInProgress() && navigation.isFocused() &&
               canUseExistingPasswordSetupSession(userData?.user || session?.user)) {
             navigation.replace("ResetPassword");
           }
@@ -105,8 +106,22 @@ export default function LoginScreen({ navigation }) {
         } catch {
           Alert.alert("Saved login unavailable", "Could not update saved login information or remove the previously saved password.");
         }
-        const { data: userData } = await supabase.auth.getUser();
-        if (navigation.isFocused()) {
+        const { data: userData, error: userError } = await supabase.auth.getUser();
+        if (navigation.isFocused() && !isInvitationInProgress()) {
+          if (userError || !userData?.user) {
+            Alert.alert("Sign-in incomplete", "Could not verify the current account. Please try again.");
+            return;
+          }
+          if (isPendingInvitation(userData?.user) && !canUseExistingPasswordSetupSession(userData.user)) {
+            try {
+              const { error: signOutError } = await supabase.auth.signOut({ scope: "local" });
+              if (signOutError) throw signOutError;
+              Alert.alert("Invitation required", "Please open your invitation or request a new link to set your Contracts password.");
+            } catch {
+              Alert.alert("Invitation required", "Please open your invitation or request a new link. Unable to sign out; please try again.");
+            }
+            return;
+          }
           navigation.replace(canUseExistingPasswordSetupSession(userData?.user) ? "ResetPassword" : "Home");
         }
       }

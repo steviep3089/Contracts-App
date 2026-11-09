@@ -22,6 +22,15 @@ export const recoverySupabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
   },
 });
 
+export const invitationSupabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
+  auth: {
+    storageKey: "contracts-invitation-memory",
+    persistSession: false,
+    autoRefreshToken: false,
+    detectSessionInUrl: false,
+  },
+});
+
 export function isRefreshTokenError(error) {
   const message = (error && (error.message || String(error))) || "";
   return /invalid refresh token|refresh token not found|refresh token/i.test(message);

@@ -15,10 +15,12 @@ import { useHeaderHeight } from "@react-navigation/elements";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { supabase } from "../supabase";
 import { canUseExistingPasswordSetupSession, recordLinkRecovery, recoverySessionReady, updateRecoveryPassword } from "../services/passwordRecovery";
+import { invitationSessionReady, updateInvitationPassword } from "../services/invitation";
 
 export default function ResetPasswordScreen({ navigation, route }) {
   const headerHeight = useHeaderHeight();
   const fromRecoveryCode = route?.params?.fromRecoveryCode === true;
+  const fromInvitation = route?.params?.fromInvitation === true;
   const [password, setPassword] = useState("");
   const [confirmPassword, setConfirmPassword] = useState("");
   const [loading, setLoading] = useState(true);
@@ -31,6 +33,19 @@ export default function ResetPasswordScreen({ navigation, route }) {
   }, []);
 
   async function checkSession() {
+    if (fromInvitation) {
+      try {
+        if (await invitationSessionReady()) {
+          setSessionReady(true);
+        } else {
+          Alert.alert("Invitation Expired", "Request a new invitation link.", [{ text: "OK", onPress: () => navigation.replace("Login") }]);
+        }
+      } catch {
+        Alert.alert("Session Error", "Could not check the invitation session. Please request a new invitation.", [{ text: "OK", onPress: () => navigation.replace("Login") }]);
+      }
+      setLoading(false);
+      return;
+    }
     if (fromRecoveryCode) {
       try {
         if (await recoverySessionReady()) {
@@ -75,12 +90,28 @@ export default function ResetPasswordScreen({ navigation, route }) {
       return;
     }
 
-    if (fromRecoveryCode && password.length < 8) {
+    if ((fromRecoveryCode || fromInvitation) && password.length < 8) {
       Alert.alert("Error", "Password must be at least 8 characters");
       return;
     }
     if (submitting) return;
     setSubmitting(true);
+    if (fromInvitation) {
+      try {
+        await updateInvitationPassword(password);
+        Alert.alert("Success", "Your Contracts password has been set. Please sign in.", [
+          { text: "OK", onPress: () => navigation.reset({ index: 0, routes: [{ name: "Login" }] }) },
+        ]);
+      } catch (error) {
+        const message = /^(Invitation session|Password updated, but sign-out failed)/.test(error.message || "")
+          ? error.message
+          : "Could not set your password. Check the password requirements and try again.";
+        Alert.alert("Unable to complete setup", message);
+      } finally {
+        setSubmitting(false);
+      }
+      return;
+    }
     if (fromRecoveryCode) {
       try {
         await updateRecoveryPassword(password, () => AsyncStorage.removeItem("savedPassword"));
@@ -141,7 +172,7 @@ export default function ResetPasswordScreen({ navigation, route }) {
       keyboardVerticalOffset={headerHeight}
     >
       <ScrollView contentContainerStyle={styles.form} keyboardShouldPersistTaps="handled">
-        <Text style={styles.title}>Reset Password</Text>
+        <Text style={styles.title}>{fromInvitation ? "Set Contracts Password" : "Reset Password"}</Text>
 
         <TextInput
           placeholder="New Password"
@@ -160,7 +191,7 @@ export default function ResetPasswordScreen({ navigation, route }) {
         />
 
         <TouchableOpacity style={styles.button} onPress={handleResetPassword} disabled={submitting}>
-          <Text style={styles.buttonText}>Reset Password</Text>
+          <Text style={styles.buttonText}>{fromInvitation ? "Set Password" : "Reset Password"}</Text>
         </TouchableOpacity>
       </ScrollView>
     </KeyboardAvoidingView>

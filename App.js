@@ -3,9 +3,11 @@ import { NavigationContainer } from "@react-navigation/native";
 import { createNativeStackNavigator } from "@react-navigation/native-stack";
 import { SafeAreaProvider } from "react-native-safe-area-context";
 import * as Linking from "expo-linking";
+import { Alert } from "react-native";
 import { supabase } from "./supabase";
 import MaintenanceGate from "./MaintenanceGate";
-import { isRecoveryRequestInProgress, recordLinkRecovery } from "./services/passwordRecovery";
+import { canUseExistingPasswordSetupSession, isRecoveryRequestInProgress, recordLinkRecovery } from "./services/passwordRecovery";
+import { createInvitationLinking, isInvitationInProgress, isInvitationLink } from "./services/invitation";
 
 import SplashScreen from "./screens/SplashScreen";
 import LoginScreen from "./screens/LoginScreen";
@@ -23,7 +25,7 @@ import ApprovalsScreen from "./screens/ApprovalsScreen";
 
 const Stack = createNativeStackNavigator();
 
-const linking = {
+const linkingConfig = {
   prefixes: ["contractsapp://"],
   config: {
     screens: {
@@ -35,19 +37,17 @@ const linking = {
 
 export default function App() {
   const navigationRef = useRef();
+  const invitationLinking = useRef(null);
+  if (!invitationLinking.current) {
+    invitationLinking.current = createInvitationLinking({
+      linking: Linking,
+      navigationRef,
+      alert: Alert.alert,
+    });
+  }
   const [routeName, setRouteName] = useState(null);
 
   useEffect(() => {
-    const needsPasswordSetup = (user) =>
-      !!(
-        user &&
-        (
-          (user.invited_at && user.user_metadata?.password_set !== true) ||
-          user.user_metadata?.force_password_change === true ||
-          user.user_metadata?.password_set === false
-        )
-      );
-
     const isInviteOrSignup = (url) =>
       url?.includes("type=invite") ||
       url?.includes("type=signup") ||
@@ -56,7 +56,7 @@ export default function App() {
 
     const checkInitialURL = async () => {
       const url = await Linking.getInitialURL();
-      if (url?.includes("type=recovery") || url?.includes("reset") || isInviteOrSignup(url)) {
+      if (!isInvitationLink(url) && (url?.includes("type=recovery") || url?.includes("reset") || isInviteOrSignup(url))) {
         setTimeout(() => {
           if (navigationRef.current?.isReady()) {
             navigationRef.current.navigate("ResetPassword");
@@ -82,12 +82,12 @@ export default function App() {
 
       if (event === "SIGNED_IN" && session?.user?.invited_at) {
         supabase.auth.getUser().then(({ data: userData }) => {
-          const needsReset = needsPasswordSetup(userData?.user || session?.user);
+          const needsReset = canUseExistingPasswordSetupSession(userData?.user || session?.user);
           if (!needsReset) {
             return;
           }
           setTimeout(() => {
-            if (navigationRef.current?.isReady() && !isRecoveryRequestInProgress() &&
+            if (navigationRef.current?.isReady() && !isRecoveryRequestInProgress() && !isInvitationInProgress() &&
                 navigationRef.current.getCurrentRoute()?.name !== "VerifyOtp" &&
                 navigationRef.current.getCurrentRoute()?.name !== "ResetPassword") {
               navigationRef.current.navigate("ResetPassword");
@@ -105,7 +105,7 @@ export default function App() {
   return (
     <SafeAreaProvider>
     <MaintenanceGate routeName={routeName} navigationRef={navigationRef}>
-    <NavigationContainer ref={navigationRef} linking={linking} onReady={() => setRouteName(navigationRef.current?.getCurrentRoute()?.name)} onStateChange={() => setRouteName(navigationRef.current?.getCurrentRoute()?.name)}>
+    <NavigationContainer ref={navigationRef} linking={{ ...linkingConfig, getInitialURL: invitationLinking.current.getInitialURL, subscribe: invitationLinking.current.subscribe }} onReady={() => { setRouteName(navigationRef.current?.getCurrentRoute()?.name); invitationLinking.current.onReady(); }} onStateChange={() => setRouteName(navigationRef.current?.getCurrentRoute()?.name)}>
         <Stack.Navigator initialRouteName="Splash" screenOptions={{ headerTitleAlign: "center" }}>
           <Stack.Screen name="Splash" component={SplashScreen} options={{ headerShown: false }} />
           <Stack.Screen name="Login" component={LoginScreen} options={{ title: "Login" }} />

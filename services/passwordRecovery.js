@@ -17,12 +17,18 @@ export function recordLinkRecovery(session) {
   linkRecoveryUserId = session?.user?.id || null;
 }
 
+export function isPendingInvitation(user) {
+  return !!(user?.invited_at && user.user_metadata?.password_set !== true);
+}
+
 export function canUseExistingPasswordSetupSession(user) {
   if (!user?.id) return false;
-  return user.id === linkRecoveryUserId ||
-    (user.invited_at && user.user_metadata?.password_set !== true) ||
+  if (user.id === linkRecoveryUserId) return true;
+  if (isPendingInvitation(user)) return false;
+  return (
     user.user_metadata?.force_password_change === true ||
-    user.user_metadata?.password_set === false;
+    user.user_metadata?.password_set === false
+  );
 }
 
 export async function verifyRecoveryCode(email, token) {

@@ -82,7 +82,8 @@ function screen(file, mocks, props) {
   };
   const intervals = [];
   const Component = load(file, {
-    react, "react-native": native, "@react-navigation/elements": { useHeaderHeight: () => 88 }, ...mocks,
+    react, "react-native": native, "@react-navigation/elements": { useHeaderHeight: () => 88 },
+    "../services/invitation": { isInvitationInProgress: () => false }, ...mocks,
   }, {
     setInterval: (fn) => { intervals.push(fn); return intervals.length; }, clearInterval() {},
   }).default;
@@ -134,7 +135,7 @@ test("ordinary sessions, wrong email and changed account cannot authorize recove
   await assert.rejects(s.recovery.updateRecoveryPassword("newpassword", async () => {}), /account changed/);
   assert.equal(s.calls.filter((x) => x[0] === "update").length, 0);
   assert.equal(s.recovery.canUseExistingPasswordSetupSession({ id: "ordinary" }), false);
-  assert.equal(Boolean(s.recovery.canUseExistingPasswordSetupSession({ id: "invite", invited_at: "now", user_metadata: {} })), true);
+  assert.equal(Boolean(s.recovery.canUseExistingPasswordSetupSession({ id: "invite", invited_at: "now", user_metadata: {} })), false);
   s.recovery.recordLinkRecovery({ user: { id: "link" } });
   assert.equal(s.recovery.canUseExistingPasswordSetupSession({ id: "link" }), true);
   assert.equal(s.recovery.canUseExistingPasswordSetupSession({ id: "other" }), false);
@@ -309,7 +310,7 @@ test("delayed login listener does not replace the verification screen and is uns
   assert.equal(unsubscribed, true);
 });
 
-test("root listener preserves code entry while still handling invites and real recovery links", async () => {
+test("root listener preserves code entry while handling forced setup and recovery links", async () => {
   const s = setup();
   const timers = [];
   const calls = [];
@@ -321,7 +322,7 @@ test("root listener preserves code entry while still handling invites and real r
   };
   const react = {
     createElement: (type, props, ...children) => ({ type, props, children }),
-    useRef: () => ({ current: navigation }),
+    useRef: (initial) => ({ current: initial === null ? null : navigation }),
     useState: () => [null, () => {}],
     useEffect: (effect) => effect(),
   };
@@ -331,10 +332,16 @@ test("root listener preserves code entry while still handling invites and real r
     "@react-navigation/native": { NavigationContainer: dummy },
     "@react-navigation/native-stack": { createNativeStackNavigator: () => ({ Navigator: dummy, Screen: dummy }) },
     "react-native-safe-area-context": { SafeAreaProvider: dummy },
+    "react-native": { Alert: { alert() {} } },
     "expo-linking": { getInitialURL: async () => null },
+    "./services/invitation": {
+      isInvitationLink: () => false,
+      isInvitationInProgress: () => false,
+      createInvitationLinking: () => ({ getInitialURL() {}, subscribe() {}, onReady() {} }),
+    },
     "./supabase": { supabase: { auth: {
       onAuthStateChange: (callback) => { listener = callback; return { data: { subscription: { unsubscribe() {} } } }; },
-      getUser: async () => ({ data: { user: { id: "invite", invited_at: "now", user_metadata: {} } } }),
+      getUser: async () => ({ data: { user: { id: "invite", invited_at: "now", user_metadata: { password_set: true, force_password_change: true } } } }),
     } } },
     "./services/passwordRecovery": s.recovery,
     "./MaintenanceGate": dummy,
@@ -343,7 +350,7 @@ test("root listener preserves code entry while still handling invites and real r
     "ContractFormsScreen", "FillFormScreen", "OutboxScreen", "SelfCertApprovalsScreen", "MyDocumentsScreen",
     "TimesheetScreen", "TimesheetApprovalsScreen", "ApprovalsScreen"]) mocks[`./screens/${name}`] = dummy;
   load("App.js", mocks, { setTimeout: (callback) => { timers.push(callback); } }).default();
-  const session = { user: { id: "invite", invited_at: "now", user_metadata: {} } };
+  const session = { user: { id: "invite", invited_at: "now", user_metadata: { password_set: true, force_password_change: true } } };
   listener("SIGNED_IN", session);
   await new Promise((resolve) => setImmediate(resolve));
   currentRoute = "VerifyOtp";
@@ -479,11 +486,12 @@ test("password form uses a scrollable keyboard-aware layout on Android and iOS",
   }
 });
 
-test("existing invited session remains usable but an ordinary session cannot open password setup", async () => {
+test("persisted invited and ordinary sessions cannot prove invitation acceptance", async () => {
   const s = setup();
   for (const [user, allowed] of [
     [{ id: "ordinary", user_metadata: {} }, false],
-    [{ id: "invite", invited_at: "now", user_metadata: { password_set: false } }, true],
+    [{ id: "invite", invited_at: "now", user_metadata: { password_set: false } }, false],
+    [{ id: "temporary", user_metadata: { force_password_change: true } }, true],
   ]) {
     const ui = screen("screens/ResetPasswordScreen.js", {
       "../supabase": { supabase: { auth: { getSession: async () => ({ data: { session: { user } }, error: null }) } } },
@@ -495,4 +503,256 @@ test("existing invited session remains usable but an ordinary session cannot ope
     assert.equal(Boolean(find(ui.render(), (n) => n.props.placeholder === "New Password")), allowed);
     assert.equal(ui.alerts.length, allowed ? 0 : 1);
   }
+});
+
+test("pending invitation login does not open the app or password setup without a link", async () => {
+  const calls = [];
+  const ui = screen("screens/LoginScreen.js", {
+    "../supabase": { supabase: { auth: {
+      signInWithPassword: async () => ({ error: null }),
+      getUser: async () => ({ data: { user: { id: "invite", invited_at: "now", user_metadata: { password_set: false } } }, error: null }),
+      signOut: async ({ scope }) => { calls.push(["signOut", scope]); return { error: null }; },
+    } } },
+    "../services/passwordRecovery": setup().recovery,
+    "@react-native-async-storage/async-storage": { removeItem: async () => {} },
+    "../assets/contracting-app.png": 1,
+  }, { navigation: { isFocused: () => true, replace: (name) => calls.push(["navigate", name]) } });
+  let tree = ui.render();
+  find(tree, (n) => n.props.placeholder === "Email").props.onChangeText("user@example.com");
+  find(tree, (n) => n.props.placeholder === "Password").props.onChangeText("password");
+  await button(ui.render(), "Sign In").props.onPress();
+  assert.deepEqual(calls, [["signOut", "local"]]);
+  assert.match(ui.alerts[0][1], /invitation/i);
+});
+
+function setupInvitation() {
+  let user = { id: "invited-user", invited_at: "now", user_metadata: { password_set: false } };
+  let refreshedUser = user;
+  let session = null;
+  let refreshError = null;
+  let signOutError = null;
+  const calls = [];
+  const invitationSupabase = { auth: {
+    signOut: async ({ scope }) => {
+      calls.push(["signOut", scope]);
+      if (signOutError) return { error: signOutError };
+      session = null;
+      return { error: null };
+    },
+    setSession: async ({ access_token, refresh_token }) => {
+      calls.push(["setSession"]);
+      if (access_token !== "valid-access" || refresh_token !== "valid-refresh") {
+        return { data: { user: null, session: null }, error: new Error("expired") };
+      }
+      session = { user };
+      return { data: { user, session }, error: null };
+    },
+    refreshSession: async () => {
+      calls.push(["refresh"]);
+      if (refreshError) return { data: null, error: refreshError };
+      session = { user: refreshedUser };
+      return { data: { user: refreshedUser, session }, error: null };
+    },
+    getSession: async () => ({ data: { session }, error: null }),
+    getUser: async () => ({ data: { user }, error: null }),
+    updateUser: async ({ password, data }) => {
+      calls.push(["update", user.id, password, data.password_set]);
+      return { error: null };
+    },
+  } };
+  const invitation = load("services/invitation.js", { "../supabase": { invitationSupabase } });
+  return {
+    invitation, calls,
+    setUser: (next) => { user = next; refreshedUser = next; },
+    setRefreshedUser: (next) => { refreshedUser = next; },
+    setRefreshError: (next) => { refreshError = next; },
+    setSignOutError: (next) => { signOutError = next; },
+    setSession: (next) => { session = next; },
+  };
+}
+
+const inviteUrl = "contractsapp://#access_token=valid-access&refresh_token=valid-refresh&type=invite";
+const tick = () => new Promise((resolve) => setImmediate(resolve));
+
+test("invitation requires link credentials and validates both session tokens and pending user", async () => {
+  const s = setupInvitation();
+  s.setSession({ user: { id: "unrelated" } });
+  assert.equal(await s.invitation.invitationSessionReady(), false);
+  await assert.rejects(s.invitation.acceptInvitationLink("contractsapp://#type=invite"));
+  await assert.rejects(s.invitation.acceptInvitationLink("contractsapp://#error=access_denied&error_code=otp_expired"));
+  await assert.rejects(s.invitation.acceptInvitationLink("contractsapp://#type=invite&access_token=bad&refresh_token=bad"));
+  await assert.rejects(s.invitation.acceptInvitationLink(`${inviteUrl}&type=invite`));
+  s.setRefreshedUser({ id: "other", invited_at: "now", user_metadata: {} });
+  await assert.rejects(s.invitation.acceptInvitationLink(inviteUrl));
+  assert.equal(await s.invitation.invitationSessionReady(), false);
+  s.setUser({ id: "completed", invited_at: "now", user_metadata: { password_set: true } });
+  await assert.rejects(s.invitation.acceptInvitationLink(inviteUrl));
+  s.setUser({ id: "ordinary", user_metadata: {} });
+  await assert.rejects(s.invitation.acceptInvitationLink(inviteUrl));
+  s.setUser({ id: "invited-user", invited_at: "now", user_metadata: { password_set: false } });
+  s.setRefreshError(new Error("used"));
+  await assert.rejects(s.invitation.acceptInvitationLink(inviteUrl));
+  s.setRefreshError(null);
+  await s.invitation.acceptInvitationLink(inviteUrl);
+  assert.equal(await s.invitation.invitationSessionReady(), true);
+  assert.equal(s.calls.filter((call) => call[0] === "refresh").length, 5);
+});
+
+test("cold and warm invitation links wait for validation and navigation readiness", async () => {
+  const s = setupInvitation();
+  const routes = [], alerts = [], forwarded = [];
+  let callback, removed = false;
+  const linking = {
+    getInitialURL: async () => inviteUrl,
+    addEventListener: (_event, fn) => { callback = fn; return { remove() { removed = true; } }; },
+  };
+  const handler = s.invitation.createInvitationLinking({
+    linking, navigationRef: { current: { resetRoot: (state) => routes.push(state) } },
+    alert: (...args) => alerts.push(args),
+  });
+  const unsubscribe = handler.subscribe((url) => forwarded.push(url));
+  assert.equal(await handler.getInitialURL(), null);
+  await tick();
+  assert.equal(routes.length, 0);
+  handler.onReady();
+  assert.equal(routes[0].routes[0].name, "ResetPassword");
+  assert.equal(routes[0].routes[0].params.fromInvitation, true);
+  callback({ url: "contractsapp://#error=access_denied&error_code=otp_expired" });
+  await tick();
+  assert.equal(routes.length, 1);
+  assert.match(alerts[0][1], /invalid, expired or already used/i);
+  callback({ url: inviteUrl });
+  await tick();
+  assert.equal(routes.length, 2);
+  callback({ url: "contractsapp://reset#type=recovery" });
+  assert.deepEqual(forwarded, ["contractsapp://reset#type=recovery"]);
+  unsubscribe();
+  assert.equal(removed, true);
+});
+
+test("invitation password setup requires the validated session and signs out only that session", async () => {
+  const s = setupInvitation();
+  await s.invitation.acceptInvitationLink(inviteUrl);
+  const navigationCalls = [];
+  const ui = screen("screens/ResetPasswordScreen.js", {
+    "../services/invitation": s.invitation,
+    "../services/passwordRecovery": setup().recovery,
+    "../supabase": { supabase: { auth: {} } },
+    "@react-native-async-storage/async-storage": {},
+  }, { navigation: { reset: (state) => navigationCalls.push(state) }, route: { params: { fromInvitation: true } } });
+  ui.render(true);
+  await tick();
+  let tree = ui.render();
+  find(tree, (n) => n.props.placeholder === "New Password").props.onChangeText("new-password");
+  find(tree, (n) => n.props.placeholder === "Confirm Password").props.onChangeText("different");
+  await button(ui.render(), "Set Password").props.onPress();
+  assert.match(ui.alerts[0][1], /do not match/i);
+  assert.equal(s.calls.filter((call) => call[0] === "update").length, 0);
+  tree = ui.render();
+  find(tree, (n) => n.props.placeholder === "Confirm Password").props.onChangeText("new-password");
+  await button(ui.render(), "Set Password").props.onPress();
+  assert.equal(s.calls.filter((call) => call[0] === "update").length, 1);
+  assert.equal(s.calls.at(-1)[0], "signOut");
+  assert.equal(s.calls.at(-1)[1], "local");
+  assert.equal(await s.invitation.invitationSessionReady(), false);
+  ui.alerts.at(-1)[2][0].onPress();
+  assert.equal(navigationCalls[0].routes[0].name, "Login");
+});
+
+test("invitation rejects a changed session and retries sign-out without repeating password update", async () => {
+  const s = setupInvitation();
+  await s.invitation.acceptInvitationLink(inviteUrl);
+  s.setSession({ user: { id: "another-user" } });
+  await assert.rejects(s.invitation.updateInvitationPassword("new-password"), /expired/);
+  assert.equal(s.calls.filter((call) => call[0] === "update").length, 0);
+  assert.equal(s.invitation.isInvitationInProgress(), false);
+  await s.invitation.acceptInvitationLink(inviteUrl);
+  s.setSignOutError(new Error("offline"));
+  await assert.rejects(s.invitation.updateInvitationPassword("new-password"), /sign-out failed/);
+  s.setSignOutError(null);
+  await s.invitation.updateInvitationPassword("new-password");
+  assert.equal(s.calls.filter((call) => call[0] === "update").length, 1);
+});
+
+test("App wiring intercepts the cold invitation and suppresses unrelated auth navigation", async () => {
+  const s = setupInvitation();
+  const timers = [], routes = [];
+  let authListener;
+  const navigation = {
+    isReady: () => true,
+    getCurrentRoute: () => ({ name: "Login" }),
+    navigate: (name) => routes.push({ name }),
+    resetRoot: (state) => routes.push(state.routes[0]),
+  };
+  const react = {
+    createElement: (type, props, ...children) => ({ type, props: props || {}, children: children.flat() }),
+    useRef: (initial) => ({ current: initial === null ? null : navigation }),
+    useState: () => [null, () => {}],
+    useEffect: (effect) => effect(),
+  };
+  const dummy = () => null;
+  const container = () => null;
+  const mocks = {
+    react,
+    "react-native": { Alert: { alert() {} } },
+    "@react-navigation/native": { NavigationContainer: container },
+    "@react-navigation/native-stack": { createNativeStackNavigator: () => ({ Navigator: dummy, Screen: dummy }) },
+    "react-native-safe-area-context": { SafeAreaProvider: dummy },
+    "expo-linking": { getInitialURL: async () => inviteUrl, addEventListener: () => ({ remove() {} }) },
+    "./supabase": { supabase: { auth: {
+      onAuthStateChange: (listener) => { authListener = listener; return { data: { subscription: { unsubscribe() {} } } }; },
+      getUser: async () => ({ data: { user: { id: "other", invited_at: "now" } } }),
+    } } },
+    "./services/passwordRecovery": setup().recovery,
+    "./services/invitation": s.invitation,
+    "./MaintenanceGate": dummy,
+  };
+  for (const name of ["SplashScreen", "LoginScreen", "VerifyOtpScreen", "ResetPasswordScreen", "HomeScreen",
+    "ContractFormsScreen", "FillFormScreen", "OutboxScreen", "SelfCertApprovalsScreen", "MyDocumentsScreen",
+    "TimesheetScreen", "TimesheetApprovalsScreen", "ApprovalsScreen"]) mocks[`./screens/${name}`] = dummy;
+  const tree = load("App.js", mocks, { setTimeout: (callback) => timers.push(callback) }).default();
+  const nav = find(tree, (node) => node.type === container);
+  assert.equal(await nav.props.linking.getInitialURL(), null);
+  authListener("SIGNED_IN", { user: { id: "other", invited_at: "now" } });
+  await tick();
+  for (const timer of timers) timer();
+  assert.equal(routes.length, 0);
+  nav.props.onReady();
+  assert.equal(routes.length, 1);
+  assert.equal(routes[0].name, "ResetPassword");
+  assert.equal(routes[0].params.fromInvitation, true);
+});
+
+test("installed Supabase client establishes and verifies an invitation session offline", async () => {
+  const { createClient } = require("@supabase/supabase-js");
+  const jwt = `e30.${Buffer.from(JSON.stringify({ exp: Math.floor(Date.now() / 1000) + 3600 })).toString("base64url")}.c2ln`;
+  const user = { id: "invited-user", invited_at: "now", user_metadata: { password_set: false }, app_metadata: {} };
+  const calls = [];
+  const fetch = async (url, options = {}) => {
+    const endpoint = new URL(String(url));
+    calls.push(`${options.method || "GET"} ${endpoint.pathname}`);
+    let body;
+    if (endpoint.pathname.endsWith("/token")) {
+      body = { access_token: jwt, refresh_token: "rotated-refresh", token_type: "bearer", expires_in: 3600, user };
+    } else if (endpoint.pathname.endsWith("/user")) {
+      body = user;
+    } else if (endpoint.pathname.endsWith("/logout")) {
+      body = {};
+    } else {
+      throw new Error("Unexpected request");
+    }
+    return new Response(JSON.stringify(body), { status: 200, headers: { "content-type": "application/json" } });
+  };
+  const invitationSupabase = createClient("https://example.supabase.co", "test-key", {
+    global: { fetch },
+    auth: { persistSession: false, autoRefreshToken: false, detectSessionInUrl: false, storageKey: "test-invitation" },
+  });
+  const invitation = load("services/invitation.js", { "../supabase": { invitationSupabase } });
+  await invitation.acceptInvitationLink(`contractsapp://#access_token=${jwt}&refresh_token=one-use-refresh&type=invite`);
+  assert.equal(await invitation.invitationSessionReady(), true);
+  await invitation.updateInvitationPassword("new-password");
+  assert.equal(await invitation.invitationSessionReady(), false);
+  assert.ok(calls.includes("POST /auth/v1/token"));
+  assert.ok(calls.includes("PUT /auth/v1/user"));
+  assert.ok(calls.includes("POST /auth/v1/logout"));
 });
